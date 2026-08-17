@@ -1,5 +1,5 @@
 const electron = require('electron')
-const remote = require('@electron/remote')
+const remote = require('./renderer-runtime')
 const { webFrame } = electron
 const SettingsService = require('./SettingsService')
 const AutoUIScaler = require('./AutoUIScaler')

@@ -138,8 +138,8 @@ Create a Draft in GitHub Releases as the target for publishing
 
 Then, publish:
 
-    GH_TOKEN={...} npm run dist:mac -- --publish onTagOrDraft
-    GH_TOKEN={...} npm run dist:win -- --publish onTagOrDraft
+    GH_TOKEN={...} CSC_NAME="Developer ID Application: ..." APPLEID=... APPLEIDPASS=... npm run release:mac -- --publish onTagOrDraft
+    GH_TOKEN={...} CSC_LINK=... CSC_KEY_PASSWORD=... npm run release:win -- --publish onTagOrDraft
     GH_TOKEN={...} npm run dist:linux -- --publish onTagOrDraft
 
 ## Deploying

@@ -3,6 +3,7 @@
 // https://github.com/wulkano/kap/blob/b326a5a/app/src/main/auto-updater.js
 
 const { BrowserWindow, dialog, app } = electron = require('electron')
+const path = require('path')
 const log = require('./shared/storyboarder-electron-log')
 const { autoUpdater } = require('electron-updater')
 
@@ -16,11 +17,12 @@ const init = () => {
 
   autoUpdater.on('update-available', (ev, info) => {
     log.info('auto-updater: update-available')
+    const version = typeof ev.version === 'string' ? ev.version.slice(0, 128) : 'a new version'
     const index = dialog.showMessageBoxSync(
       null,
       {
         type: 'question',
-        message: `An update is available to version ${ev.version}. Update now? There will be a short delay while we download the update and install it for you.`,
+        message: `An update is available to version ${version}. Update now? There will be a short delay while we download the update and install it for you.`,
         buttons: ['Later', 'Download and Install Now']
       }
     )
@@ -38,17 +40,27 @@ const init = () => {
         resizable: false,
         backgroundColor: '#E5E5E5',
         webPreferences: {
-          nodeIntegration: true,
+          preload: path.join(__dirname, 'preload', 'update.js'),
+          nodeIntegration: false,
           devTools: true,
-          contextIsolation: false
+          contextIsolation: true,
+          sandbox: true,
+          webSecurity: true
         }
       })
       win.on('closed', () => {
         win = null
       })
-      win.loadURL(`file://${__dirname}/../update.html`)
+      win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+      win.webContents.on('will-navigate', event => event.preventDefault())
+      win.webContents.on('will-redirect', event => event.preventDefault())
+      win.loadFile(path.join(__dirname, '../update.html'))
       win.once('ready-to-show', () => {
-        win.webContents.send('release-notes', ev.releaseNotes)
+        let releaseNotes = ev.releaseNotes
+        if (typeof releaseNotes !== 'string') {
+          try { releaseNotes = JSON.stringify(releaseNotes || '') } catch (err) { releaseNotes = '' }
+        }
+        win.webContents.send('release-notes', releaseNotes.slice(0, 256 * 1024))
         win.show()
       })
 
@@ -69,14 +81,15 @@ const init = () => {
       // fail gracelessly if we can't update properly
       autoUpdater.on('error', err => {
         log.info('auto-updater: error', err)
-        console.error(err)
-        dialog.showMessageBox(null, { message: 'Update failed.\n' + err })
+        dialog.showMessageBox(null, { message: 'Update failed. Please try again later.' })
         win && win.close()
       })
 
       // Download and Install
       log.info('auto-updater: autoUpdater.downloadUpdate()')
-      autoUpdater.downloadUpdate()
+      autoUpdater.downloadUpdate().catch(err => {
+        log.info('auto-updater: download failed', err)
+      })
     }
   })
 
@@ -90,7 +103,9 @@ const init = () => {
   })
 
   autoUpdater.autoDownload = false
-  autoUpdater.checkForUpdates()
+  autoUpdater.checkForUpdates().catch(err => {
+    log.info('auto-updater: update check failed', err)
+  })
 }
 
 exports.init = init

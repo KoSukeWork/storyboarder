@@ -1,5 +1,5 @@
 const EventEmitter = require('events').EventEmitter
-const prefModule = require('@electron/remote').require('./prefs')
+const prefModule = require('../utils/renderer-runtime').require('./prefs')
 
 let emitter = new EventEmitter()
 

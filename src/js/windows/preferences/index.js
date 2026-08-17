@@ -1,5 +1,5 @@
-const remoteMain = require('@electron/remote/main')
 const { BrowserWindow } = require('electron')
+const path = require('path')
 
 module.exports = () => {
   let win
@@ -19,11 +19,16 @@ module.exports = () => {
       backgroundColor: '#E5E5E5',
       webPreferences: {
         devTools: true,
-        nodeIntegration: true,
-        contextIsolation: false
+        webSecurity: true,
+        nodeIntegration: false,
+        contextIsolation: true,
+        sandbox: true,
+        preload: path.join(__dirname, '..', '..', 'preload', 'preferences.js')
       }
     })
-    remoteMain.enable(win.webContents)
+    win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+    win.webContents.on('will-navigate', event => event.preventDefault())
+    win.webContents.on('will-redirect', event => event.preventDefault())
 
     win.once('closed', () => {
       win = null

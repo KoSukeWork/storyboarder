@@ -1,5 +1,6 @@
 const fs = require('fs-extra')
 const path = require('path')
+const { resolveInside } = require('../utils/security')
 
 module.exports = class LinkedFileManager {
   constructor ({ storyboarderFilePath }) {
@@ -72,7 +73,7 @@ module.exports = class LinkedFileManager {
   }
 
   getFilepath (filename) {
-    return path.join(path.dirname(this.storyboarderFilePath), 'images', filename)
+    return resolveInside(path.join(path.dirname(this.storyboarderFilePath), 'images'), filename)
   }
   
   getTimestamp (filepath) {

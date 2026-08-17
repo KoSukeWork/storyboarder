@@ -1,39 +1,32 @@
-const { ipcRenderer, shell } = require('electron')
-const remote = require('@electron/remote')
+const { toPrefsMemento } = require('./context-helpers-renderer')
 
-const prefs = remote.require('./prefs')
-const { toPrefsMemento } = require('./context-helpers')
+const api = () => window.storyboarderPrintProject || {}
 
 const reportAnalyticsEvent = (context, event) => {
-  if (event.type == 'done.invoke.exportToFile') {
-    ipcRenderer.send('analyticsEvent', 'Board', 'exportPDF')
+  if (event && event.type === 'done.invoke.exportToFile') {
+    api().analytics && api().analytics('Board', 'exportPDF')
   }
-
-  // NOTE number of copies is not user-editable yet, so for now we always report it as 1
-  if (event.type == 'done.invoke.requestPrint') {
-    ipcRenderer.send('analyticsEvent', 'Board', 'print', null, 1)
+  if (event && event.type === 'done.invoke.requestPrint') {
+    api().analytics && api().analytics('Board', 'print', null, 1)
   }
 }
 
-const showItemInFolder = (context, event) =>
-  shell.showItemInFolder(context.filepath)
-
-const persist = (context, event) => {
-  prefs.set('printProjectState', toPrefsMemento(context), true)
+const showItemInFolder = context => {
+  if (api().showItemInFolder && typeof context.filepath === 'string') {
+    api().showItemInFolder(context.filepath).catch(() => {})
+  }
 }
 
-const hidePreviewDisplay = (context, event) => {
-  context.canvas.parentNode.style.visibility = 'hidden'
+const persist = context => {
+  if (api().setPrefs) api().setPrefs(toPrefsMemento(context)).catch(() => {})
 }
 
-const showPreviewDisplay = (context, event) => {
-  context.canvas.parentNode.style.visibility = 'visible'
+const hidePreviewDisplay = context => {
+  if (context.canvas && context.canvas.parentNode) context.canvas.parentNode.style.visibility = 'hidden'
 }
 
-module.exports = {
-  reportAnalyticsEvent,
-  showItemInFolder,
-  persist,
-  hidePreviewDisplay,
-  showPreviewDisplay
+const showPreviewDisplay = context => {
+  if (context.canvas && context.canvas.parentNode) context.canvas.parentNode.style.visibility = 'visible'
 }
+
+module.exports = { reportAnalyticsEvent, showItemInFolder, persist, hidePreviewDisplay, showPreviewDisplay }

@@ -4,6 +4,14 @@ const trash = require('trash')
 
 const boardModel = require('../models/board')
 const util = require('../utils')
+const {
+  MAX_PROJECT_FILE_SIZE,
+  assertReadableFile,
+  readFileUtf8Bounded,
+  resolveInside,
+  resolveForWriteInside,
+  pathExists
+} = require('../utils/security')
 
 const zip = (a, b) => a.map((v, n) => [v, b[n]])
 
@@ -11,8 +19,14 @@ const flatten = arr => Array.prototype.concat(...arr)
 
 const cleanupScene = (absolutePathToStoryboarderFile, trashFn = trash) => {
   return new Promise((resolve, reject) => {
-    let absolutePathToImagesFolder = path.resolve(path.join(path.dirname(absolutePathToStoryboarderFile), 'images'))
-    let originalBoardData = JSON.parse(fs.readFileSync(absolutePathToStoryboarderFile))
+    absolutePathToStoryboarderFile = assertReadableFile(absolutePathToStoryboarderFile, MAX_PROJECT_FILE_SIZE)
+    let absolutePathToImagesFolder = resolveInside(path.dirname(absolutePathToStoryboarderFile), 'images')
+    let originalBoardData = JSON.parse(readFileUtf8Bounded(absolutePathToStoryboarderFile, MAX_PROJECT_FILE_SIZE))
+    if (!originalBoardData || !Array.isArray(originalBoardData.boards)) {
+      throw new Error('The project does not contain a valid boards array')
+    }
+    originalBoardData.boards = originalBoardData.boards
+      .filter(board => board && typeof board === 'object' && !Array.isArray(board))
 
     const {
       renamablePairs,
@@ -22,9 +36,16 @@ const cleanupScene = (absolutePathToStoryboarderFile, trashFn = trash) => {
     try {
       // rename the renamable files (layers, thumbnails, linked files)
       for (let p of [...renamablePairs]) {
-        let from = path.join(absolutePathToImagesFolder, p.from)
-        let   to = path.join(absolutePathToImagesFolder, p.to)
-        if (fs.existsSync(from)) {
+        let from
+        let to
+        try {
+          from = resolveForWriteInside(absolutePathToImagesFolder, p.from)
+          to = resolveForWriteInside(absolutePathToImagesFolder, p.to)
+        } catch (err) {
+          console.warn(`Skipping invalid project media rename: ${p.from} -> ${p.to}`)
+          continue
+        }
+        if (pathExists(from)) {
           // console.log('rename', p.from, p.to)
           fs.renameSync(from, to)
         } else {
@@ -34,7 +55,13 @@ const cleanupScene = (absolutePathToStoryboarderFile, trashFn = trash) => {
 
       // if the linked file does not exist, delete it from data
       boardData.boards = boardData.boards.map(b => {
-        if (b.link && !fs.existsSync(path.join(absolutePathToImagesFolder, b.link))) {
+        let linkPath
+        try {
+          linkPath = b.link && resolveForWriteInside(absolutePathToImagesFolder, b.link)
+        } catch (err) {
+          linkPath = null
+        }
+        if (b.link && (!linkPath || !pathExists(linkPath))) {
           // console.log('could not find', b.link)
           // console.log('removing link')
           delete b.link
@@ -44,7 +71,13 @@ const cleanupScene = (absolutePathToStoryboarderFile, trashFn = trash) => {
 
       // if the audio file does not exist, delete the audio object from the board data
       boardData.boards.forEach(b => {
-        if (b.audio && !fs.existsSync(path.join(absolutePathToImagesFolder, b.audio.filename))) {
+        let audioPath
+        try {
+          audioPath = b.audio && resolveForWriteInside(absolutePathToImagesFolder, b.audio.filename)
+        } catch (err) {
+          audioPath = null
+        }
+        if (b.audio && (!audioPath || !pathExists(audioPath))) {
           delete b.audio
         }
       })
@@ -60,7 +93,21 @@ const cleanupScene = (absolutePathToStoryboarderFile, trashFn = trash) => {
       const allFiles = fs.readdirSync(absolutePathToImagesFolder)
       const unusedFiles = allFiles.filter(filename => !usedFiles.includes(filename))
 
-      const absolutePathToUnusedFiles = unusedFiles.map(filename => path.join(absolutePathToImagesFolder, filename))
+      // Only hand regular, contained files to the trash implementation.  In
+      // particular, do not follow a symlink or pass an unexpected directory
+      // from a hostile project to a recursive delete operation.
+      const absolutePathToUnusedFiles = unusedFiles.map(filename => {
+        try {
+          const lexical = path.join(absolutePathToImagesFolder, filename)
+          const lexicalStat = fs.lstatSync(lexical)
+          if (!lexicalStat.isFile() || lexicalStat.isSymbolicLink()) return null
+          const candidate = resolveForWriteInside(absolutePathToImagesFolder, filename)
+          return fs.statSync(candidate).isFile() ? candidate : null
+        } catch (err) {
+          console.warn(`Skipping unsafe unused media path: ${filename}`)
+          return null
+        }
+      }).filter(Boolean)
 
       // ... now, delete unused files ...
       trashFn(absolutePathToUnusedFiles).then(() => {
@@ -83,7 +130,19 @@ const cleanupScene = (absolutePathToStoryboarderFile, trashFn = trash) => {
 
 const prepareCleanup = boardData => {
   let originalData = boardData
+  if (!originalData || !Array.isArray(originalData.boards)) {
+    return { renamablePairs: [], boardData: { ...(originalData || {}), boards: [] } }
+  }
+  originalData = {
+    ...originalData,
+    boards: originalData.boards.filter(board => board && typeof board === 'object' && !Array.isArray(board))
+  }
   let cleanedData = util.stringifyClone(boardData)
+  if (!cleanedData || !Array.isArray(cleanedData.boards)) {
+    return { renamablePairs: [], boardData: { ...originalData, boards: [] } }
+  }
+  cleanedData.boards = cleanedData.boards
+    .filter(board => board && typeof board === 'object' && !Array.isArray(board))
   cleanedData.boards = cleanedData.boards
                         .map(boardModel.updateUrlsFromIndex)
                         .map(b => {

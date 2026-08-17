@@ -1,0 +1,1 @@
+module.exports = { createGzip: () => ({ on: () => {}, pipe: destination => destination }), gzipSync: value => value, deflateRaw: (value, callback) => callback(null, value), deflateRawSync: value => value }

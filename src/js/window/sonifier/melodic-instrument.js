@@ -1,6 +1,6 @@
 const Tone = require('tone')
 
-const remote = require('@electron/remote')
+const remote = require('../../utils/renderer-runtime')
 const prefsModule = remote.require('./prefs')
 const enableHighQualityAudio = prefsModule.getPrefs('melo hi gual')['enableHighQualityAudio']
 

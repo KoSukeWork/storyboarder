@@ -1,10 +1,8 @@
-import classNames from 'classnames'
+import React from 'react'
+
 const Item = ({language, displayName, selectedLanguage, onClick, editable}) => {
 
-    let className = classNames("element", {
-        "element-selected": language === selectedLanguage,
-
-    })
+    const className = `element${language === selectedLanguage ? ' element-selected' : ''}`
     return (
         <div className={className} onClick={() => onClick(language)}>
             {displayName} {editable ? '' : '(installed)'}

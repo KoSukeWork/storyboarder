@@ -106,5 +106,16 @@ describe('prefs (main)', () => {
       prefsModule.set('enableTooltips', false)
       assert.equal(prefsModule.getPrefs()['enableTooltips'], false)
     })
+
+    it('ignores unsafe nested keys and malformed dotted paths', () => {
+      prefsModule.set('safe.nested', { value: true })
+      assert.equal(prefsModule.getPrefs().safe.nested.value, true)
+
+      // A scalar parent must not make set() throw when a bad dotted key is
+      // received from a renderer.
+      assert.doesNotThrow(() => prefsModule.set('enableTooltips.nested', true))
+      assert.doesNotThrow(() => prefsModule.set('__proto__.polluted', true))
+      assert.strictEqual({}.polluted, undefined)
+    })
   })
 })

@@ -29,11 +29,6 @@ if (
 
 
 
-    // extremely hack lol -- ensures electron-notarize is re-installed
-    console.log('      • re-installing electron-notarize')
-    const { spawnSync } = require('child_process')
-    spawnSync('npm', ['install', 'electron-notarize'], { encoding: 'utf8' })
-
     const { notarize } = require('electron-notarize')
 
 
@@ -45,15 +40,18 @@ if (
       APPLEIDPASS,
     } = process.env
 
+    if (!APPLEID || !APPLEIDPASS) {
+      throw new Error('APPLEID and APPLEIDPASS are required for macOS notarization')
+    }
+
     let config = {
-      appBundleId: 'com.wonderunit.storyboarder',
+      appBundleId: context.packager.appInfo.id,
       appPath: `${appOutDir}/${appName}.app`,
       appleId: APPLEID,
       appleIdPassword: APPLEIDPASS,
     }
 
-    console.log('      • config for notarizing:')
-    console.log({ config })
+    console.log(`      • notarizing ${appName} (credentials redacted)`)
 
     return await notarize(config)
   }

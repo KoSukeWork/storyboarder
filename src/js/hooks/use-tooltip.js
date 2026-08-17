@@ -1,6 +1,7 @@
 import React, {useCallback, useEffect, useRef, useMemo} from 'react'
 
 import {acceleratorAsHtml} from '../utils'
+const { sanitizeMarkup } = require('../utils/security')
 
 const triangleSize = 10.0
 
@@ -70,10 +71,13 @@ const tooltipOffset = {
 
 const tooltipContent = (title, description, keys, position = 'top center') => {
   const div = document.createElement('div')
-  div.className = `tooltip ${position.replace(' ', '-')}`
+  const safePosition = Object.prototype.hasOwnProperty.call(tooltipOffset, position)
+    ? position
+    : 'top center'
+  div.className = `tooltip ${safePosition.replace(' ', '-')}`
   div.innerHTML = `
-    <div class='title'>${title}</div>
-    <div class='description'>${description}</div>
+    <div class='title'>${sanitizeMarkup(title)}</div>
+    <div class='description'>${sanitizeMarkup(description)}</div>
     ${keys ? `<div class='key-command'>${acceleratorAsHtml(keys)}</div>` : ''}
     `
   

@@ -14,6 +14,7 @@ const EventEmitter = require('events').EventEmitter
 module.exports = new EventEmitter()
 
 const util = require('./utils/index')
+const { escapeHtml } = require('./utils/security')
 
 class UndoList {
   constructor () {
@@ -137,7 +138,7 @@ class UndoList {
     }
 
     let trace = (...args) => {
-      this.debugEl.innerHTML += '<div>' + args.join(' ') + '</div>'
+      this.debugEl.innerHTML += '<div>' + escapeHtml(args.join(' ')) + '</div>'
     }
 
     let boardIndexes = arr =>

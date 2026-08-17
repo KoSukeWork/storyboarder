@@ -1,10 +1,7 @@
-const remoteMain = require('@electron/remote/main')
-const {BrowserWindow} = electron = require('electron')
+const { BrowserWindow } = require('electron')
 const log = require('../../shared/storyboarder-electron-log')
 const path = require('path')
 const url = require('url')
-
-process.env['ELECTRON_DISABLE_SECURITY_WARNINGS'] = true
 
 let win
 let loaded = false
@@ -19,11 +16,10 @@ let memento = {
 const reveal = () => {
     win.show()
     win.focus()
-    win.webContents.openDevTools()
     //onComplete(win)
   }
 
-const createWindow = async ( onComplete) => {
+const createWindow = async (onComplete = () => {}) => {
     if (win) {
       //reveal(onComplete)
       return
@@ -47,16 +43,19 @@ const createWindow = async ( onComplete) => {
       acceptFirstMouse: true,
       simpleFullscreen: true,
       webPreferences: {
-        nodeIntegration: true,
-        plugins: true,
-        webSecurity: false,
-        allowRunningInsecureContent: true,
-        experimentalFeatures: true,
-        backgroundThrottling: true,
-        contextIsolation: false
+        nodeIntegration: false,
+        contextIsolation: true,
+        sandbox: true,
+        preload: path.join(__dirname, '..', '..', 'preload', 'language-preferences.js'),
+        plugins: false,
+        webSecurity: true,
+        experimentalFeatures: false,
+        backgroundThrottling: true
       },
     })
-    remoteMain.enable(win.webContents)
+    win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+    win.webContents.on('will-navigate', event => event.preventDefault())
+    win.webContents.on('will-redirect', event => event.preventDefault())
     win.on('resize', () => memento = win.getBounds())
     win.on('move', () => memento = win.getBounds())
     win.webContents.on('will-prevent-unload', event => {

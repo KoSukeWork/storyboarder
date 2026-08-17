@@ -2,8 +2,9 @@ const fs = require('fs-extra')
 const path = require('path')
 const GIFEncoder = require('gifencoder')
 const dayjs = require('dayjs')
-const app = require('@electron/remote').app
-const { dialog } = require('@electron/remote')
+const runtime = require('../utils/renderer-runtime')
+const app = runtime.app
+const { dialog } = runtime
 
 const {
   boardFileImageSize,
@@ -22,6 +23,7 @@ const exporterFcp = require('../exporters/final-cut-pro')
 const exporterCleanup = require('../exporters/cleanup')
 const exporterFfmpeg = require('../exporters/ffmpeg')
 const util = require('../utils/index')
+const { resolveInside, resolveForWriteInside } = require('../utils/security')
 
 class Exporter {
   exportCleanup (boardData, projectFileAbsolutePath) {
@@ -51,7 +53,7 @@ class Exporter {
     let exportsPath = ensureExportsPathExists(projectFileAbsolutePath)
 
     let basename = path.basename(projectFileAbsolutePath)
-    let outputPath = path.join(
+    let outputPath = resolveForWriteInside(
       exportsPath,
       util.dashed(basename + ' Exported ' + dayjs().format('YYYY-MM-DD hh.mm.ss'))
     )
@@ -61,11 +63,11 @@ class Exporter {
 
     let data = await exporterFcp.generateFinalCutProData(boardData, { projectFileAbsolutePath, outputPath })
     let xml = exporterFcp.generateFinalCutProXml(data)
-    fs.writeFileSync(path.join(outputPath, util.dashed(basename + '.xml')), xml)
+    fs.writeFileSync(resolveForWriteInside(outputPath, util.dashed(basename + '.xml')), xml)
 
     let fcpxData = await exporterFcpX.generateFinalCutProXData(boardData, { projectFileAbsolutePath, outputPath })
     let fcpxml = exporterFcpX.generateFinalCutProXXml(fcpxData)
-    fs.writeFileSync(path.join(outputPath, util.dashed(basename + '.fcpxml')), fcpxml)
+    fs.writeFileSync(resolveForWriteInside(outputPath, util.dashed(basename + '.fcpxml')), fcpxml)
 
     // export ALL layers of each one of the boards
     let basenameWithoutExt = path.basename(projectFileAbsolutePath, path.extname(projectFileAbsolutePath))
@@ -86,8 +88,8 @@ class Exporter {
     boardData.boards.forEach((board, index) => {
       if (board.audio && board.audio.filename && board.audio.filename.length) {
         fs.copySync(
-          path.join(path.dirname(projectFileAbsolutePath), 'images', board.audio.filename),
-          path.join(outputPath, board.audio.filename)
+          resolveInside(path.join(path.dirname(projectFileAbsolutePath), 'images'), board.audio.filename),
+          resolveForWriteInside(outputPath, board.audio.filename)
         )
       }
     })
@@ -100,7 +102,7 @@ class Exporter {
       let exportsPath = ensureExportsPathExists(projectFileAbsolutePath)
       let basename = path.basename(projectFileAbsolutePath)
       if (!outputPath) {
-        outputPath = path.join(
+        outputPath = resolveForWriteInside(
           exportsPath,
           basename + ' Images ' + dayjs().format('YYYY-MM-DD hh.mm.ss')
         )
@@ -193,7 +195,7 @@ class Exporter {
     // save in the exports directory
     let exportsPath = ensureExportsPathExists(projectFileAbsolutePath)
     let basename = path.basename(projectFileAbsolutePath, path.extname(projectFileAbsolutePath))
-    let filepath = path.join(
+    let filepath = resolveForWriteInside(
       exportsPath,
       basename + ' ' + dayjs().format('YYYY-MM-DD hh.mm.ss') + '.gif'
     )

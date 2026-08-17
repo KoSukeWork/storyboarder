@@ -1,8 +1,8 @@
-const remote = require('@electron/remote')
+const remote = require('./utils/renderer-runtime')
 
 const Tone = require('tone')
 const { shuffle } = require('./utils/index')
-const prefsModule = require('@electron/remote').require('./prefs')
+const prefsModule = require('./utils/renderer-runtime').require('./prefs')
 
 Tone.Transport.latencyHint = 'playback'
 Tone.Transport.start("+0.1")

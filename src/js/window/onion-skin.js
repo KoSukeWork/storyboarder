@@ -1,9 +1,9 @@
 const CAF = require('caf')
 const fs = require('fs')
-const path = require('path')
 
 const exporterCommon = require('../exporters/common')
 const boardModel = require('../models/board')
+const { resolveInside } = require('../utils/security')
 
 class OnionSkin {
   constructor ({ width, height, onSetEnabled, onRender }) {
@@ -116,7 +116,7 @@ class OnionSkin {
       try {
 
         let filename = boardModel.boardFilenameForPosterFrame(board)
-        let filepath = path.join(pathToImages, filename)
+        let filepath = resolveInside(pathToImages, filename)
 
         let lastModified
         try {

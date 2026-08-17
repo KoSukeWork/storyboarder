@@ -4,10 +4,30 @@ const tmp = require('tmp')
 const archiver = require('archiver')
 
 const exporterCopyProject = require('./copy-project')
+const { safeFilename } = require('../utils/security')
+
+const assertArchiveOutputFilepath = filepath => {
+  if (
+    typeof filepath !== 'string' || filepath.length === 0 || filepath.length > 4096 ||
+    filepath.includes('\0') || !path.isAbsolute(filepath) || path.extname(filepath).toLowerCase() !== '.zip'
+  ) {
+    throw new Error('A valid absolute ZIP output path is required')
+  }
+
+  const resolved = path.resolve(filepath)
+  fs.ensureDirSync(path.dirname(resolved))
+  const safePath = path.join(fs.realpathSync(path.dirname(resolved)), path.basename(resolved))
+  if (fs.existsSync(safePath)) {
+    const stat = fs.lstatSync(safePath)
+    if (stat.isSymbolicLink() || !stat.isFile()) throw new Error('ZIP output must be a regular file')
+  }
+  return safePath
+}
 
 const exportAsZIP = async (srcFilePath, exportFilePath) => {
+  exportFilePath = assertArchiveOutputFilepath(exportFilePath)
   // create temporary folder
-  let tmpdir = tmp.dirSync()
+  let tmpdir = tmp.dirSync({ unsafeCleanup: true })
 
   let tmpZipFilePath
 
@@ -15,7 +35,8 @@ const exportAsZIP = async (srcFilePath, exportFilePath) => {
 
   try {
     // copy project to folder
-    let dstFolderPath = path.join(tmpdir.name, path.basename(srcFilePath, path.extname(srcFilePath)))
+    const projectName = safeFilename(path.basename(srcFilePath, path.extname(srcFilePath)), 'project')
+    let dstFolderPath = path.join(tmpdir.name, projectName)
     // let dstFilePath = path.join(dstFolderPath, path.basename(srcFilePath))
 
     // if directory present, delete all its files
@@ -29,7 +50,7 @@ const exportAsZIP = async (srcFilePath, exportFilePath) => {
     try {
       await new Promise((resolve, reject) => {
         // zip the folder
-        tmpZipFilePath = path.join(tmpdir.name, path.basename(srcFilePath, path.extname(srcFilePath)) + Date.now() + '.zip')
+        tmpZipFilePath = path.join(tmpdir.name, `${projectName}-${Date.now()}.zip`)
         // console.log('writing', tmpZipFilePath)
         let output = fs.createWriteStream(tmpZipFilePath)
         let archive = archiver('zip', {
@@ -41,6 +62,7 @@ const exportAsZIP = async (srcFilePath, exportFilePath) => {
           // console.log('archiver has been finalized and the output file descriptor has closed.')
           resolve()
         })
+        output.on('error', reject)
         // good practice to catch warnings (ie stat failures and other non-blocking errors)
         archive.on('warning', function(err) {
           if (err.code === 'ENOENT') {
@@ -62,7 +84,8 @@ const exportAsZIP = async (srcFilePath, exportFilePath) => {
         archive.directory(dstFolderPath, false)
 
         // finalize the archive (ie we are done appending files but streams have to finish yet)
-        archive.finalize()
+        const finalizing = archive.finalize()
+        if (finalizing && typeof finalizing.catch === 'function') finalizing.catch(reject)
       })
 
       // copy zip to exports
@@ -74,7 +97,6 @@ const exportAsZIP = async (srcFilePath, exportFilePath) => {
     }
   } finally {
     // cleanup
-    fs.emptyDirSync(tmpdir.name)
     tmpdir.removeCallback()
   }
 

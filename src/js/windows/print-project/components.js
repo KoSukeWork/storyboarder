@@ -1,7 +1,13 @@
 let React = require('react')
 const { Suspense, useRef, useEffect } = React
 const { useService } = require('@xstate/react')
-const { useTranslation } = require('react-i18next')
+let translations = Object.create(null)
+const setTranslations = value => {
+  translations = value && typeof value === 'object' ? value : Object.create(null)
+}
+const useTranslation = () => ({
+  t: key => typeof translations[key] === 'string' ? translations[key] : String(key)
+})
 
 const h = require('../../utils/h')
 const { specs } = require('./machine')
@@ -531,5 +537,6 @@ const PrintApp = ({ service, canvas }) => {
 }
 
 module.exports = {
-  PrintApp
+  PrintApp,
+  setTranslations
 }

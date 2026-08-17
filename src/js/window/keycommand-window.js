@@ -1,16 +1,83 @@
-require('electron-redux/preload')
-var os = require('os')
+const bridge = window.storyboarderKeyCommands
+const data = bridge && bridge.getData ? bridge.getData() : null
+const platform = data && typeof data.platform === 'string' ? data.platform : 'win32'
+const keymap = data && data.keymap && typeof data.keymap === 'object' ? data.keymap : {}
+const store = { getState: () => ({ entities: { keymap } }) }
 
-const { pressed, findMatchingCommandsByKeys } = require('../utils/keytracker')
+const escapeHtml = value => String(value == null ? '' : value)
+  .replace(/&/g, '&amp;')
+  .replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;')
+  .replace(/'/g, '&#39;')
 
-const configureStore = require('../shared/store/configureStore')
-const store = configureStore()
+const sanitizeMarkup = value => {
+  const template = document.createElement('template')
+  template.innerHTML = String(value == null ? '' : value)
+  const allowed = new Set(['strong', 'br'])
+  const visit = node => {
+    if (node.nodeType === Node.TEXT_NODE) return document.createTextNode(node.nodeValue || '')
+    if (node.nodeType !== Node.ELEMENT_NODE) return document.createDocumentFragment()
+    const tagName = node.tagName.toLowerCase()
+    if (!allowed.has(tagName)) return document.createTextNode(node.textContent || '')
+    const clean = document.createElement(tagName)
+    for (const child of Array.from(node.childNodes)) clean.appendChild(visit(child))
+    return clean
+  }
+  const output = document.createElement('div')
+  for (const child of Array.from(template.content.childNodes)) output.appendChild(visit(child))
+  return output.innerHTML
+}
 
-const capitalizeSingleLetters = keystroke => keystroke.split('+').map(k => k.length === 1 ? k.toUpperCase() : k).join('+')
+let down = new Set()
+const normalizeKeyForEvent = event => {
+  if (event.key === ' ') return 'Space'
+  if (event.key && event.key.startsWith('Arrow')) return event.key.slice(5)
+  if (event.key === 'OS') return 'Meta'
+  return event.key && event.key.length === 1 ? event.key.toLowerCase() : event.key
+}
+const pressed = () => [...down]
+const resetPressed = () => { down = new Set() }
+window.addEventListener('keydown', event => down.add(normalizeKeyForEvent(event)), false)
+window.addEventListener('keyup', event => {
+  const key = normalizeKeyForEvent(event)
+  if (key === 'Meta') resetPressed()
+  down.delete(key)
+}, false)
+window.addEventListener('blur', resetPressed, false)
+document.addEventListener('visibilitychange', resetPressed, false)
+
+const findMatchingCommandsByKeys = (currentKeymap, pressedKeys) => {
+  if (!Array.isArray(pressedKeys) || !currentKeymap || typeof currentKeymap !== 'object') return []
+  const matches = []
+  for (const [command, accelerator] of Object.entries(currentKeymap)) {
+    if (typeof accelerator !== 'string' || accelerator.length > 256) continue
+    const isMatch = accelerator.split('+').every(key => {
+      if (key === 'CommandOrControl') {
+        return platform === 'darwin' ? pressedKeys.includes('Meta') : pressedKeys.includes('Control')
+      }
+      if (key === 'Plus') return pressedKeys.includes('=') || pressedKeys.includes('+')
+      return pressedKeys.includes(key)
+    })
+    if (isMatch) matches.push(command)
+  }
+  return matches
+}
+
+// Keymaps are persisted user data.  Keep malformed values inert and bounded
+// before they reach HTML, data attributes, or selector construction below.
+const normalizeAccelerator = value => typeof value === 'string'
+  ? value.slice(0, 256).replace(/[\u0000-\u001f\u007f]/g, '')
+  : ''
+
+const capitalizeSingleLetters = keystroke => normalizeAccelerator(keystroke)
+  .split('+')
+  .map(k => k.length === 1 ? k.toUpperCase() : k)
+  .join('+')
 
 const keystrokeFor = commandCode => capitalizeSingleLetters(store.getState().entities.keymap[commandCode])
 
-let IS_MAC = os.platform() === 'darwin'
+let IS_MAC = platform === 'darwin'
 //IS_MAC = false
 
 const CMD_OR_CTRL = IS_MAC ? '\u2318' : '\u2303'
@@ -178,6 +245,7 @@ let commands = [
 ]
 
 const acceleratorAsHtml = (accelerator, options = { animated: true }) => {
+  accelerator = normalizeAccelerator(accelerator)
   let splitOn
   if (accelerator.includes('|')) {
     splitOn = "|"
@@ -191,7 +259,12 @@ const acceleratorAsHtml = (accelerator, options = { animated: true }) => {
       if (m) {
         return `<kbd class="modifier${ options.animated ? ' modifier-key-anim' : ''}">${m}</kbd>`
       } else {
-        return `<kbd ${ options.animated ? 'class="action-key-anim"' : ''}>${KEY_MAP[k] || k}</kbd>`
+        // KEY_MAP values are static markup (PageUp deliberately contains a
+        // line break); arbitrary keymap values must be escaped as text.
+        const display = Object.prototype.hasOwnProperty.call(KEY_MAP, k)
+          ? KEY_MAP[k]
+          : escapeHtml(k)
+        return `<kbd ${ options.animated ? 'class="action-key-anim"' : ''}>${display}</kbd>`
       }
     })
 
@@ -204,6 +277,7 @@ const acceleratorAsHtml = (accelerator, options = { animated: true }) => {
 }
 
 const acceleratorParts = (accelerator) => {
+  accelerator = normalizeAccelerator(accelerator)
   let splitOn
   if (accelerator.includes('|')) {
     splitOn = "|"
@@ -225,6 +299,14 @@ const acceleratorParts = (accelerator) => {
       }
     })
   return [keyMods, keyRoot]
+}
+
+const keyElementFor = token => {
+  if (typeof token !== 'string') return null
+  // IDs are generated from the fixed keyboard layout.  Never interpolate a
+  // persisted keymap value into a CSS selector.
+  const id = `key-${token.toLowerCase().replace(/[^a-z0-9_-]/g, '')}`
+  return id === 'key-' ? null : document.getElementById(id)
 }
 
 
@@ -276,12 +358,14 @@ let renderCommands = () => {
     classType = commands[i][0]
     html.push('</div>')
     for (var y = 0; y < commands[i][1].length; y++) {
-      let commandParts = acceleratorParts(commands[i][1][y][1])
-      html.push('<div class="command" data-type="' + classType + '" data-command="' + commands[i][1][y][1] + '" data-color="' + (i+1) + '" data-keytrigger="' + commandParts[1][0] + '">')
-      html.push(commands[i][1][y][0])
+      let accelerator = normalizeAccelerator(commands[i][1][y][1])
+      let commandParts = acceleratorParts(accelerator)
+      const commandLabel = sanitizeMarkup(commands[i][1][y][0])
+      html.push('<div class="command" data-type="' + escapeHtml(classType) + '" data-command="' + escapeHtml(accelerator) + '" data-color="' + (i+1) + '" data-keytrigger="' + escapeHtml(commandParts[1][0] || '') + '">')
+      html.push(commandLabel)
       html.push('<span class="keyset">')
       // get the commands root command and put the classtype in that keyboard button
-      let keyEl = document.querySelector('#key-' + commandParts[1][0])
+      let keyEl = keyElementFor(commandParts[1][0])
       if (keyEl) {
         keyEl.classList.add('type-' + classType)
         if (!keyEl.dataset.color) {
@@ -290,7 +374,7 @@ let renderCommands = () => {
         //keyEl.classList.add('color-' + (i+1))
         keyEl.dataset.type = classType
       }
-      html.push(acceleratorAsHtml(commands[i][1][y][1]))
+      html.push(acceleratorAsHtml(accelerator))
       html.push('</span>')
       html.push('</div>')
     }
@@ -301,12 +385,13 @@ let renderCommands = () => {
   document.querySelectorAll('.command').forEach(el => {
     el.addEventListener('mouseenter', function(event) {
       document.querySelector('#keyboard').classList.add('hover')
-      document.querySelectorAll('.key.type-' + event.target.dataset.type ).forEach(keyEl => {
+      document.querySelectorAll('.key').forEach(keyEl => {
+        if (!keyEl.classList.contains('type-' + event.target.dataset.type)) return
         keyEl.classList.add('highlight')
         keyEl.classList.add('color-' + event.target.dataset.color)
       })
       let commandParts = acceleratorParts(event.target.dataset.command)
-      let keyEl = document.querySelector('#key-' + commandParts[1][0])
+      let keyEl = keyElementFor(commandParts[1][0])
       if (keyEl) {
         let modifierSide
         if (keyEl.getBoundingClientRect().left > 480) {
@@ -316,16 +401,19 @@ let renderCommands = () => {
         }
         let i
         for (i = 0; i < commandParts[0].length; i++) {
-          document.querySelector('#key-' + modifierSide + commandParts[0][i].toLowerCase()).classList.add('active')
-          document.querySelector('#key-' + modifierSide + commandParts[0][i].toLowerCase()).classList.add('color-' + event.target.dataset.color)
-          document.querySelector('#key-' + modifierSide + commandParts[0][i].toLowerCase()).classList.add('highlight')
+          const modifier = document.getElementById('key-' + modifierSide + commandParts[0][i].toLowerCase())
+          if (!modifier) continue
+          modifier.classList.add('active')
+          modifier.classList.add('color-' + event.target.dataset.color)
+          modifier.classList.add('highlight')
         }
         keyEl.classList.add('active')
       }
     });
 
     el.addEventListener('mouseleave', function(event) {
-      document.querySelectorAll('.key.type-' + event.target.dataset.type ).forEach(keyEl => {
+      document.querySelectorAll('.key').forEach(keyEl => {
+        if (!keyEl.classList.contains('type-' + event.target.dataset.type)) return
         keyEl.classList.remove('highlight')
         keyEl.classList.remove('active')
         keyEl.classList.remove('color-' + event.target.dataset.color)
@@ -352,7 +440,8 @@ let renderCommands = () => {
         event.target.classList.add('active')
         event.target.classList.add('color-' + event.target.dataset.color)
       }
-      document.querySelectorAll('.command[data-keytrigger="' + event.target.id.split('-')[1] + '"]').forEach(keyEl => {
+      document.querySelectorAll('.command').forEach(keyEl => {
+        if (keyEl.dataset.keytrigger !== event.target.id.split('-')[1]) return
         keyEl.classList.add('highlight')
       })
     });
@@ -367,19 +456,18 @@ let renderCommands = () => {
 
   // key command tester
   let outputEl = document.createElement('div')
-  outputEl.innerHTML = `<div
-    class="output"
-    style="color: rgba(255, 255, 255, 0.8); font-size: 13px; position: absolute; bottom: 0; left: 0">
-  </div>`
+  outputEl.innerHTML = '<div class="output"></div>'
   document.querySelector('.commands').appendChild(outputEl.firstChild)
   const renderKeyTester = event => {
-    let matchingCommands = findMatchingCommandsByKeys(store.getState().entities.keymap, pressed()).join(', ')
-    let keysStr = `<span style="color: rgba(255, 255, 255, 0.6); letter-spacing: 0.05em">PRESSED</span>
-                   <span style="color: rgba(255, 255, 255, 0.8)">${pressed().join('+')}</span>`
+    let matchingCommands = findMatchingCommandsByKeys(store.getState().entities.keymap, pressed())
+      .map(escapeHtml)
+      .join(', ')
+    let keysStr = `<span class="output-label">PRESSED</span>
+                   <span class="output-value">${escapeHtml(pressed().join('+'))}</span>`
     let matchingCommandsStr = matchingCommands
       ? `&nbsp;&nbsp;&nbsp;
-          <span style="color: rgba(255, 255, 255, 0.6); letter-spacing: 0.05em">COMMANDS</span>
-          <span style="color: rgba(255, 255, 255, 0.8)">${matchingCommands}</span>
+          <span class="output-label">COMMANDS</span>
+          <span class="output-value">${matchingCommands}</span>
          `
       : ''
     document.querySelector('.output').innerHTML = keysStr + matchingCommandsStr

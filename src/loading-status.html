@@ -2,6 +2,7 @@
 <html>
   <head>
     <meta charset="utf-8">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none';">
     <link rel="stylesheet" href="./css/fonts.css">
     <style>
       html {
@@ -51,26 +52,6 @@
       <div class="messages">Initializing …</div>
     </div>
 
+    <script src="./js/windows/loading-status/window.js"></script>
   </body>
-  <script>
-    const { ipcRenderer } = require('electron')
-    const util = require('./js/utils')
-
-    const titleEl = document.querySelector('.title')
-    const messagesEl = document.querySelector('.messages')
-
-    const params = (new URL(document.location)).searchParams
-    let title = 'Loading ' + util.truncateMiddle(params.get('name'))
-    titleEl.textContent = title
-    document.title = title
-
-    ipcRenderer.on('log', (event, opt) => {
-      if (opt.type === 'progress') {
-        messagesEl.textContent = opt.message + ' …'
-      }
-      if (opt.type === 'error') {
-        messagesEl.textContent = '⚠ ' + opt.message
-      }
-    })
-  </script>
 </html>

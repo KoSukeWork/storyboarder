@@ -2,6 +2,7 @@
 <html>
   <head>
     <meta charset="UTF-8">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self' data: blob:; script-src 'self'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: storyboarder-media:; media-src 'self' data: blob: storyboarder-media:; connect-src 'self' https://storyboarders.com https://app.wonderunit.com; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'">
     <link rel="stylesheet" href="./css/fonts.css">
     <link rel="stylesheet" href="./css/mainwindow.css">
     <link rel="stylesheet" href="./css/storyboarder-sketch-pane.css">
@@ -564,12 +565,6 @@
 
     </div>
     <div id="notifications" class="notifications"></div>
-  <script>
-    if (typeof require !== 'undefined') {
-   
-      window.onerror = (message, source, lineno, colno, error) => require('electron').ipcRenderer.send('errorInWindow', message, source, lineno, colno, error)
-      require('./js/window/main-window')
-    }
-  </script>
+  <script defer src="./build/main-window.js"></script>
   </body>
 </html>

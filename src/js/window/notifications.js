@@ -1,4 +1,5 @@
 let count = 0
+const { sanitizeMarkup } = require('../utils/security')
 let timeout
 let notifications = []
 let messages
@@ -38,7 +39,7 @@ const addNotification = (data) => {
 
   content = document.createElement('div')
   content.classList.add('notification-content')
-  content.innerHTML = 
+  content.innerHTML = sanitizeMarkup(
   `
     <div>
       <div>
@@ -50,6 +51,7 @@ const addNotification = (data) => {
                     </div>`
                  : '') +
     `</div>`
+  )
 
   el.appendChild(content)
 
@@ -84,8 +86,10 @@ const addNotification = (data) => {
 }
 
 const formatMessageData = (data) => {
-  data.message = data.message.replace(/\n/g, '<br />')
-  return data
+  return {
+    ...data,
+    message: String(data && data.message == null ? '' : data.message).replace(/\n/g, '<br />')
+  }
 }
 
 const onPointerDown = event =>

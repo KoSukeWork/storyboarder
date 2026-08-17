@@ -1,7 +1,5 @@
 const path = require('path')
-const { app } = process && process.type == 'renderer'
-  ? require('@electron/remote')
-  : require('electron')
+const { app } = require('electron')
 
 const SettingsService = require('../utils/SettingsService')
 

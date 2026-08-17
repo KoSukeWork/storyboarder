@@ -1,6 +1,5 @@
 import React, { useMemo, useEffect } from 'react'
 import Item from './item'
-import Scrollable from '../../components/Scrollable'
 const List = ({languages, onSelect, selectedLanguage}) => {
 
     const createElements = () => {
@@ -21,11 +20,11 @@ const List = ({languages, onSelect, selectedLanguage}) => {
     }
     return (
         <div className="listing">
-            <Scrollable>
+            <div style={{ overflowY: 'auto' }}>
                 {
                     createElements()
                 }
-            </Scrollable>
+            </div>
         </div>
     )
 }

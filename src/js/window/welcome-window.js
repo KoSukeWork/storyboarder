@@ -1,195 +1,91 @@
-const {ipcRenderer, shell} = require('electron')
-const remote = require('@electron/remote')
-const path = require('path')
-const dayjs = require('dayjs')
-const relativeTime = require('dayjs/plugin/relativeTime')
-dayjs.extend(relativeTime)
-const menu = require('../menu')
-const sfx = require('../wonderunit-sound')
-const prefsModule = require('@electron/remote').require('./prefs')
-const log = require('../shared/storyboarder-electron-log')
-const pkg = require('../../../package.json')
+const api = () => window.storyboarderWelcome || {}
 
-//#region Localization 
-const i18n = require('../services/i18next.config')
-remote.getCurrentWindow().on('focus', () => {
-  menu.setWelcomeMenu(i18n)
-})
-i18n.on('loaded', (loaded) => {
-  let lng = ipcRenderer.sendSync("getCurrentLanguage")
-  i18n.changeLanguage(lng, () => {
-    i18n.on("languageChanged", changeLanguage)
-    updateHTMLText()
-    updateRecentDocuments()
-  })
-  i18n.off('loaded')
-})
-
-const updateHTMLText = () => {
-  document.querySelector('.recent').innerHTML = i18n.t("welcome-window.recentStoryboards")
-  document.querySelector('#getting-started').innerHTML = i18n.t("menu.help.getting-started")
-  document.querySelector('#new-storyboard').innerHTML = i18n.t("welcome-window.new-storyboard")
-  document.querySelector('#open-storyboard').innerHTML = i18n.t("menu.file.open")
-  let welcomeLine1 = document.querySelector('#welcome-line-1')
-  if(welcomeLine1) welcomeLine1.innerHTML = i18n.t("welcome-window.welcome-line-1")
-  let welcomeLine2 = document.querySelector('#welcome-line-2')
-  if(welcomeLine2) welcomeLine2.innerHTML = i18n.t("welcome-window.welcome-line-2")
-  let welcomeLine3 = document.querySelector('#welcome-line-3')
-  if(welcomeLine3) welcomeLine3.innerHTML = i18n.t("welcome-window.welcome-line-3")
+const formatRelativeTime = timestamp => {
+  const delta = Date.now() - Number(timestamp)
+  const minutes = Math.max(0, Math.round(delta / 60000))
+  if (minutes < 1) return 'JUST NOW'
+  if (minutes < 60) return `${minutes} MINUTES AGO`
+  const hours = Math.round(minutes / 60)
+  if (hours < 24) return `${hours} HOURS AGO`
+  const days = Math.round(hours / 24)
+  return `${days} DAYS AGO`
 }
 
-const changeLanguage = (lng) => {
-  if(remote.getCurrentWindow().isFocused()) {
-    menu.setWelcomeMenu(i18n)
-  }
-  updateHTMLText()
-  updateRecentDocuments()
-  ipcRenderer.send("languageChanged", lng)
-}
-
-ipcRenderer.on("languageChanged", (event, lng) => {
-  i18n.off("languageChanged", changeLanguage)
-  i18n.changeLanguage(lng, () => {
-    i18n.on("languageChanged", changeLanguage)
-    updateHTMLText()
-  })
-})
-
-ipcRenderer.on("languageModified", (event, lng) => {
-  i18n.reloadResources(lng).then(() => {updateHTMLText(); menu.setWelcomeMenu(i18n) } )
-})
-
-ipcRenderer.on("languageAdded", (event, lng) => {
-  i18n.loadLanguages(lng).then(() => { i18n.changeLanguage(lng); })
-})
-
-ipcRenderer.on("languageRemoved", (event, lng) => {
-  i18n.changeLanguage(lng)
-  menu.setWelcomeMenu(i18n)
-})
-//#endregion
-
-const onFileDrop = e => {
-  e.preventDefault()
-  if (!e || !e.dataTransfer || !e.dataTransfer.files || !e.dataTransfer.files.length) {
-    return
-  }
-  for (let file of e.dataTransfer.files) {
-    if (path.extname(file.name) === ".storyboarder" || path.extname(file.name) === ".fountain") {
-      ipcRenderer.send('openFile', file.path)
+const onFileDrop = event => {
+  event.preventDefault()
+  const files = event.dataTransfer && event.dataTransfer.files
+  if (!files || !files.length) return
+  for (const file of files) {
+    const name = typeof file.name === 'string' ? file.name.toLowerCase() : ''
+    if (name.endsWith('.storyboarder') || name.endsWith('.fountain')) {
+      api().openFile(file.path)
       break
     }
   }
 }
 
-let updateRecentDocuments = () => {
-  let count = 0
-  let html = []
-
-  let recentDocuments = prefsModule.getPrefs('welcome')['recentDocuments']
-  console.log(recentDocuments)
-  if (recentDocuments && recentDocuments.length>0) {
-    for (var recentDocument of recentDocuments) {
-      html.push(`<div class="recent-item" data-filename="${recentDocument.filename}"><img src="./img/fileicon.png" draggable="false"><div class="text">`)
-      let filename = recentDocument.filename.split(path.sep)
-      filename = filename[filename.length-1]
-      html.push(`<h2>${recentDocument.title}</h2>`)
-
-      let lastUpdated = dayjs(recentDocument.time).fromNow().toUpperCase()
-      html.push(lastUpdated) // `// ${util.msToTime(recentDocument.totalMovieTime)} / ${recentDocument.totalPageCount} PAGES / ${String(recentDocument.totalWordCount).replace(/\B(?=(\d{3})+(?!\d))/g, ",")} WORDS`)
-
-      html.push('</div></div>')
-      count++
-    }
-    document.querySelector('#recent').innerHTML = html.join('')
-    document.querySelector('.recent').innerHTML = i18n.t("welcome-window.recentStoryboards")
-    let recentDivs = document.querySelector("#recent").children
-    for (var i = 0; i < recentDivs.length; i++) {
-      recentDivs[i].onclick = (e)=>{
-        console.log(e.currentTarget.dataset.filename)
-        ipcRenderer.send('openFile', e.currentTarget.dataset.filename)
-      }
-      recentDivs[i].addEventListener("mouseenter", ()=>{sfx.rollover()})
-      recentDivs[i].addEventListener("pointerdown", ()=>{sfx.down()})
-    }
+const updateRecentDocuments = async () => {
+  const response = await api().getData()
+  const translations = response && response.translations ? response.translations : {}
+  const labels = {
+    '.recent': 'welcome-window.recentStoryboards',
+    '#getting-started': 'menu.help.getting-started',
+    '#new-storyboard': 'welcome-window.new-storyboard',
+    '#open-storyboard': 'menu.file.open',
+    '#welcome-line-1': 'welcome-window.welcome-line-1',
+    '#welcome-line-2': 'welcome-window.welcome-line-2',
+    '#welcome-line-3': 'welcome-window.welcome-line-3'
   }
-  document.querySelector('#recent').scrollTop = 0
+  for (const [selector, key] of Object.entries(labels)) {
+    const element = document.querySelector(selector)
+    if (element && typeof translations[key] === 'string') element.textContent = translations[key]
+  }
+  const recent = response && Array.isArray(response.recentDocuments) ? response.recentDocuments : []
+  const recentRoot = document.querySelector('#recent')
+  recentRoot.replaceChildren()
+  for (const item of recent) {
+    const itemEl = document.createElement('div')
+    itemEl.className = 'recent-item'
+    itemEl.dataset.filename = item.filename
+    const icon = document.createElement('img')
+    icon.src = './img/fileicon.png'
+    icon.draggable = false
+    const text = document.createElement('div')
+    text.className = 'text'
+    const title = document.createElement('h2')
+    title.textContent = item.title
+    text.append(title, document.createTextNode(formatRelativeTime(item.time)))
+    itemEl.append(icon, text)
+    itemEl.onclick = () => api().openFile(item.filename)
+    itemEl.onmouseenter = () => api().playSfx && api().playSfx('rollover')
+    itemEl.onpointerdown = () => api().playSfx && api().playSfx('down')
+    recentRoot.appendChild(itemEl)
+  }
+  recentRoot.scrollTop = 0
 }
 
-updateRecentDocuments()
-
-document.querySelector('#close-button').onclick = () => {
-  console.log('close')
-  let window = remote.getCurrentWindow()
-  window.close()
-}
-
-document.querySelector('iframe').onload = ()=>{
-  Array.prototype.slice.call(document.querySelector('iframe').contentDocument.getElementsByTagName('a')).forEach((element)=>{
-    element.onclick = (e)=> {
-      shell.openExternal(e.currentTarget.href)
-      e.preventDefault()
-    }
-    element.addEventListener("mouseover", ()=>{sfx.rollover()})
-    element.addEventListener("pointerdown", ()=>{sfx.down()})
-  })
-
-  // handle dropping a file onto the iframe
-  let contentDocument = document.querySelector('iframe').contentDocument
-  contentDocument.ondragover = () => { return false }
-  contentDocument.ondragleave = () => { return false }
-  contentDocument.ondragend = () => { return false }
-  contentDocument.ondrop = onFileDrop
-}
-
+const initialize = async () => {
+  const initialData = await api().getData()
+  document.querySelector('[data-js="version-number"]').textContent = ` v${initialData && initialData.version ? initialData.version : ''}`
+document.querySelector('#close-button').onclick = () => api().close()
+document.querySelector('#open-storyboard').onclick = () => api().openDialog()
+document.querySelector('#new-storyboard').onclick = () => api().openNewWindow()
 document.querySelector('#getting-started').onclick = event => {
   event.preventDefault()
-  shell.openExternal("https://wonderunit.com/storyboarder/faq/#How-do-I-get-started")
+  api().openExternal('https://wonderunit.com/storyboarder/faq/#How-do-I-get-started')
 }
-
-document.querySelector('#open-storyboard').onclick = ()=> {
-  document.querySelector('#open-storyboard').style.pointerEvents = 'none'
-  setTimeout(()=>{document.querySelector('#open-storyboard').style.pointerEvents = 'auto'}, 1000)
-  ipcRenderer.send('openDialogue')
+for (const selector of ['#getting-started', '#open-storyboard', '#new-storyboard']) {
+  const element = document.querySelector(selector)
+  element.onmouseenter = () => api().playSfx && api().playSfx('rollover')
+  element.onpointerdown = () => api().playSfx && api().playSfx('down')
 }
-
-document.querySelector('#new-storyboard').onclick = ()=> {
-  ipcRenderer.send('openNewWindow')
-}
-
-document.querySelector('#getting-started').addEventListener("mouseover", ()=>{sfx.rollover()})
-document.querySelector('#open-storyboard').addEventListener("mouseover", ()=>{sfx.rollover()})
-document.querySelector('#new-storyboard' ).addEventListener("mouseover", ()=>{sfx.rollover()})
-document.querySelector('#getting-started').addEventListener("pointerdown", ()=>{sfx.error()})
-document.querySelector('#open-storyboard').addEventListener("pointerdown", ()=>{sfx.down()})
-document.querySelector('#new-storyboard' ).addEventListener("pointerdown", ()=>{sfx.positive()})
-
-document.querySelector("span[data-js='version-number']").innerHTML = ` v${pkg.version}`
-
-ipcRenderer.on('playsfx', (event, args)=>{
-  switch (args) {
-    case 'negative':
-      sfx.negative()
-      break
-    case 'rollover':
-      sfx.rollover()
-      break
-    case 'down':
-      sfx.down()
-      break
-    case 'error':
-      sfx.error()
-      break
-  }
-})
-
-sfx.init()
-
-ipcRenderer.on('updateRecentDocuments', (event, args)=>{
-  updateRecentDocuments()
-})
-
-window.ondragover = () => { return false }
-window.ondragleave = () => { return false }
-window.ondragend = () => { return false }
+api().onRecentDocumentsChanged && api().onRecentDocumentsChanged(() => updateRecentDocuments().catch(() => {}))
+api().onLanguageChanged && api().onLanguageChanged(() => updateRecentDocuments().catch(() => {}))
+window.ondragover = event => { event.preventDefault(); return false }
+window.ondragleave = event => { event.preventDefault(); return false }
+window.ondragend = event => { event.preventDefault(); return false }
 window.ondrop = onFileDrop
+  updateRecentDocuments().catch(() => {})
+}
+
+initialize().catch(() => {})

@@ -1,376 +1,154 @@
-// NOTE this window’s session state is stored in prefs as `printingWindowState`
-// with the name unchanged for backward compatibility
-// even though it only handles worksheet printing now.
-// and print-project handles everything else.
-// previously this window handled worksheet AND project printing.
-const {ipcRenderer} = require('electron')
-const remote = require('@electron/remote')
-const pdf = require('pdfjs-dist')
-const app = remote.app
-const path = require('path')
+const pdfPromise = import('pdfjs-dist/legacy/build/pdf.mjs')
+const api = () => window.storyboarderPrintWorksheet || {}
 
-const prefModule = remote.require('./prefs')
-const worksheetPrinter = require('./worksheet-printer')
-const storyTips = new(require('../../window/story-tips'))
-
-const createPrint = require('../../print.js')
-
-const print = createPrint({
-  pathToSumatraExecutable: path.join(app.getAppPath(), 'src', 'data', 'app', 'SumatraPDF.exe')
-})
-
-//#region Localization
-const i18n = require('../../services/i18next.config.js')
-
-i18n.on('loaded', (loaded) => {
-  let lng = ipcRenderer.sendSync("getCurrentLanguage")
-  i18n.changeLanguage(lng, () => {
-    updateHTML()
-    i18n.on("languageChanged", changeLanguage)
-  })
-  i18n.off('loaded')
-})
-
-const changeLanguage = (lng) => {
-  updateHTML()
-  ipcRenderer.send("languageChanged", lng)
+let projectData
+let pageDocument
+let pageNumber = 1
+let rendering = false
+let pendingPage = null
+let currentOptions = {
+  paperSize: 'A4',
+  rows: 5,
+  cols: 3,
+  spacing: 15,
+  copies: 1
 }
 
-ipcRenderer.on("languageChanged", (event, lng) => {
-  i18n.off("languageChanged", changeLanguage)
-  i18n.changeLanguage(lng, () => {
-    updateHTML()
-    i18n.on("languageChanged", changeLanguage)
-  })
-})
-
-ipcRenderer.on("languageModified", (event, lng) => {
-  i18n.reloadResources(lng).then(() => {updateHTML();})
-})
-
-ipcRenderer.on("languageAdded", (event, lng) => {
-  i18n.loadLanguages(lng).then(() => { i18n.changeLanguage(lng); })
-})
-
-ipcRenderer.on("languageRemoved", (event, lng) => {
-  i18n.changeLanguage(lng)
-})
-
-const translateHtml = (elementName, traslationKey) => {
-  let elem = document.querySelector(elementName)
-  if(!elem || !elem.childNodes.length) return
-  elem.childNodes[elem.childNodes.length - 1].textContent = i18n.t(traslationKey)
-}
-
-const updateHTML = () => {
-  translateHtml("#config-title", "print-worksheet.worksheet-title")
-  translateHtml("#config-intro", "print-worksheet.worksheet-intro") 
-
-  translateHtml("#paper-size", "print-worksheet.paper-size")
-  translateHtml("#letter", "print-worksheet.letter")
-  translateHtml("#format", "print-worksheet.format")
-  translateHtml("#columns-label", "print-worksheet.columns-label")
-  translateHtml("#rows-label", "print-worksheet.rows-label")
-  translateHtml("#spacing-label", "print-worksheet.spacing-label")
-  translateHtml("#copies-label", "print-worksheet.copies-label")
-  translateHtml("#print-button", "print-worksheet.print-button")
-  translateHtml("#pdf-button", "print-worksheet.pdf-button")
-  translateHtml("#prev_button", "print-worksheet.prev_button")
-  translateHtml("#page-info", "print-worksheet.page-info")
-  translateHtml("#next_button", "print-worksheet.next_button")
-}
-//#endregion
-
-
-let paperSize
-let paperOrientation
-let rows
-let cols
-let spacing
-
-let aspectRatio
-let currentScene
-let scriptData
-let pdfdocument
-// on change save preferences
-
-const cleanup = () => {
-  pdfdocument = null
-}
-
-window.pdf = pdf
-document.querySelector('#close-button').onclick = (e) => {
-  ipcRenderer.send('playsfx', 'negative')
-  let window = remote.getCurrentWindow()
-  cleanup()
-  window.hide()
-}
-document.addEventListener('keyup', event => {
-  if (event.key == 'Escape') {
-    ipcRenderer.send('playsfx', 'negative')
-    let window = remote.getCurrentWindow()
-    cleanup()
-    window.hide()
+const $ = selector => document.querySelector(selector)
+const applyTranslations = translations => {
+  if (!translations || typeof translations !== 'object') return
+  const labels = {
+    '#config-title': 'print-worksheet.worksheet-title',
+    '#config-intro': 'print-worksheet.worksheet-intro',
+    '#letter': 'print-worksheet.letter',
+    '#format': 'print-worksheet.format',
+    '#columns-label': 'print-worksheet.columns-label',
+    '#rows-label': 'print-worksheet.rows-label',
+    '#spacing-label': 'print-worksheet.spacing-label',
+    '#copies-label': 'print-worksheet.copies-label',
+    '#print-button': 'print-worksheet.print-button',
+    '#pdf-button': 'print-worksheet.pdf-button',
+    '#prev_button': 'print-worksheet.prev_button',
+    '#next_button': 'print-worksheet.next_button'
   }
-})
+  for (const [selector, key] of Object.entries(labels)) {
+    const element = $(selector)
+    if (element && typeof translations[key] === 'string') element.textContent = translations[key]
+  }
+}
+const displaySpinner = visible => {
+  $('#preview-loading').style.display = visible ? 'flex' : 'none'
+  for (const selector of ['#paper-size', '#row-number', '#column-number', '#spacing']) $(selector).disabled = visible
+}
 
-document.querySelector('#print-button').onclick = (e) => {
-  if (!pdfdocument) return false;
+const decodeBase64 = value => {
+  const binary = atob(value)
+  const bytes = new Uint8Array(binary.length)
+  for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index)
+  return bytes
+}
 
-  let copies = document.querySelector('#copies').value
-
-  try {
-    print({
-      filepath: pdfdocument,
-      paperSize: paperSize === 'LTR' ? 'letter' : 'a4',
-      paperOrientation: 'landscape',
-      copies
-    })
-
-    ipcRenderer.send('analyticsEvent', 'Application', 'print-worksheet', null, copies)
-
-    ipcRenderer.send('playsfx', 'positive')
-    let window = remote.getCurrentWindow()
-    cleanup()
-    window.hide()
-  } catch (err) {
-    alert(err)
+const renderPage = async number => {
+  if (!pageDocument) return
+  rendering = true
+  const page = await pageDocument.getPage(number)
+  const canvas = document.createElement('canvas')
+  const viewport = page.getViewport({ scale: 1.5 })
+  canvas.width = viewport.width
+  canvas.height = viewport.height
+  await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise
+  $('#preview').src = canvas.toDataURL()
+  $('#page_num').textContent = String(number)
+  $('#page_count').textContent = String(pageDocument.numPages)
+  $('#page-navigation').style.display = pageDocument.numPages > 1 ? 'flex' : 'none'
+  rendering = false
+  if (pendingPage !== null) {
+    const next = pendingPage
+    pendingPage = null
+    renderPage(next).catch(() => {})
   }
 }
 
-document.querySelector('#pdf-button').onclick = (e) => {
-  if (!pdfdocument) return false;
-  ipcRenderer.send('exportPrintableWorksheetPdf', pdfdocument)
-  cleanup()
-  remote.getCurrentWindow().hide()
+const queuePage = number => {
+  if (!pageDocument) return
+  const next = Math.max(1, Math.min(pageDocument.numPages, number))
+  if (rendering) pendingPage = next
+  else renderPage(next).catch(() => {})
 }
 
-document.querySelector('#paper-size').addEventListener('change', (e) => {
-  paperSize = e.target.value
-  generatePDF()
-  prefModule.set('printingWindowState.paperSize', paperSize)
-})
-
-document.querySelector('#row-number').addEventListener('change', (e) => {
-  rows = e.target.value
-  generatePDF()
-  prefModule.set('printingWindowState.rows', rows)
-})
-
-document.querySelector('#column-number').addEventListener('change', (e) => {
-  cols = e.target.value
-  generatePDF()
-  prefModule.set('printingWindowState.cols', cols)
-})
-
-document.querySelector('#spacing').addEventListener('change', (e) => {
-  spacing = e.target.value
-  generatePDF()
-  prefModule.set('printingWindowState.spacing', spacing)
-})
-
-const displaySpinner = (visible) => {
-  document.querySelector('#preview-loading').style.display = (visible) ? 'flex' : 'none';
-  document.querySelector('#paper-size').disabled = visible
-  document.querySelector('#row-number').disabled = visible
-  document.querySelector('#column-number').disabled = visible
-  document.querySelector('#spacing').disabled = visible
-}
-
-const loadWindow = () => {
-  let prefs = prefModule.getPrefs('print window')
-
-  let printingWindowState
-
-  if (!prefs.printingWindowState) {
-    printingWindowState = {
-      paperSize: 'LTR',
-      paperOrientation: 'landscape',
-      rows: 5,
-      cols: 3,
-      spacing: 15
-    }
-    prefModule.set('printingWindowState', printingWindowState)
-  } else {
-    printingWindowState = prefs.printingWindowState
-  }
-
-  paperSize = printingWindowState.paperSize
-  paperOrientation = printingWindowState.paperOrientation
-  rows = printingWindowState.rows
-  cols = printingWindowState.cols
-  spacing = printingWindowState.spacing
-
-  document.querySelector('#paper-size').value = paperSize
-  document.querySelector('#row-number').value = rows
-  document.querySelector('#column-number').value = cols
-  document.querySelector('#spacing').value = spacing
-
-  document.querySelector('#prev_button').addEventListener('click', onPrevPage);
-  document.querySelector('#next_button').addEventListener('click', onNextPage);
-
-  worksheetPrinter.on('generated', async (path)=>{
-    // Disable workers to avoid yet another cross-origin issue (workers need
-    // the URL of the script to be loaded, and dynamically loading a cross-origin
-    // script does not work).
-    // PDFJS.disableWorker = true;
-
-    // The workerSrc property shall be specified.
-    //console.log(require('pdfjs-dist/build/pdf.worker'))
-
-    await reloadPDFDocument(path)
-
-    //console.log(remote.getCurrentWindow().webContents.getPrinters())
-    //document.querySelector("#preview").src = 'zoinks.png'
-    console.log(path)
-  })
-}
-
-let pdfDoc = null,
-    pageNum = 1,
-    pageRendering = false,
-    pageNumPending = null,
-    scale = 1.5,
-    canvas = document.createElement('canvas'),
-    ctx = canvas.getContext('2d')
-
-let retry = 0
-const reloadPDFDocument = async (path) => {
-  pdf.GlobalWorkerOptions.workerSrc = '../../../../node_modules/pdfjs-dist/build/pdf.worker.js'
-
-
-  /**
-   * Asynchronously downloads PDF.
-   */
-  try {
-    let pdfDoc_ = await pdf.getDocument(path).promise
-    pdfDoc = pdfDoc_
-    document.querySelector('#page_count').textContent = pdfDoc.numPages
-
-    if (pageNum >= pdfDoc.numPages) {
-      pageNum = pdfDoc.numPages
-    }
-
-    // Initial/first page rendering
-    renderPage(pageNum)
-    pdfdocument = path
-  } catch (err) {
-    console.error(err)
-    // Sometime the PDF loading fails for obscur reason and retrying succeed, hence this code
-    if (retry < 3) {
-      console.log('retry loading ' + path)
-      retry++
-      await reloadPDFDocument(path)
-    }
-  }
-}
-
-/**
- * Get page info from document, resize canvas accordingly, and render page.
- * @param num Page number.
- */
-function renderPage(num) {
-  if (!pdfDoc) return;
-  pageRendering = true;
-  // Using promise to fetch the page
-  pdfDoc.getPage(num).then(function(page) {
-    let viewport = page.getViewport({ scale });
-    canvas.height = viewport.height;
-    canvas.width = viewport.width;
-
-    // Render PDF page into canvas context
-    let renderContext = {
-      canvasContext: ctx,
-      viewport: viewport
-    };
-    let renderTask = page.render(renderContext);
-
-    // Wait for rendering to finish
-    renderTask.promise.then(function() {
-      pageRendering = false;
-      if (pageNumPending !== null) {
-        // New page rendering is pending
-        renderPage(pageNumPending);
-        pageNumPending = null;
-      } else {
-        document.querySelector('#preview').src = canvas.toDataURL()
-        document.querySelector('#paper').style.transform = 'rotate3d(1, 0, 1, ' + ((Math.random() * 4)-2) + 'deg)'
-        document.querySelector('#page-navigation').style.display = (pdfDoc.numPages > 1) ? 'flex' : 'none';
-        document.querySelector('#preview-pane-content').style.marginTop = (pdfDoc.numPages > 1) ? '-75px' : '0px'
-        document.querySelector('#preview-pane').style.justifyContent = (pdfDoc.numPages > 1) ? 'space-between' : 'center';
-        displaySpinner(false);
-      }
-    });
-  });
-
-  // Update page counters
-  document.querySelector('#page_num').textContent = pageNum;
-}
-
-/**
- * If another page rendering in progress, waits until the rendering is
- * finised. Otherwise, executes rendering immediately.
- */
-function queueRenderPage(num) {
-  if (pageRendering) {
-    pageNumPending = num;
-  } else {
-    renderPage(num);
-  }
-}
-
-/**
- * Displays previous page.
- */
-function onPrevPage() {
-  if (!pdfDoc) return;
-  if (pageNum <= 1) {
-    return;
-  }
-  pageNum--;
-  queueRenderPage(pageNum);
-}
-
-/**
- * Displays next page.
- */
-function onNextPage() {
-  if (!pdfDoc) return;
-  if (pageNum >= pdfDoc.numPages) {
-    return;
-  }
-  pageNum++;
-  queueRenderPage(pageNum);
-}
-
-const generatePDF = () => {
-  pdfdocument = null
-  generateWorksheet()
-}
-
-const generateWorksheet = () => {
+const generate = async () => {
   displaySpinner(true)
-  console.log(paperSize, aspectRatio, rows, cols, spacing, currentScene, storyTips.getTipString(), scriptData)
-  setTimeout(()=>{
-    worksheetPrinter.generate(paperSize, aspectRatio, rows, cols, spacing, currentScene, storyTips.getTipString(), scriptData)
-  }, 500)
+  try {
+    const result = await api().generate({
+      ...currentOptions,
+      aspectRatio: projectData && projectData.currentBoardData && projectData.currentBoardData.aspectRatio,
+      currentScene: projectData && projectData.currentScene
+    })
+    if (!result || !result.ok) throw new Error('Worksheet generation failed')
+    const pdf = await pdfPromise
+    pageDocument = await pdf.getDocument({ data: decodeBase64(result.pdf), isEvalSupported: false, disableWorker: true }).promise
+    pageNumber = 1
+    await renderPage(pageNumber)
+  } catch (error) {
+    console.error(error)
+    alert('Unable to generate worksheet preview.')
+  } finally {
+    displaySpinner(false)
+  }
 }
 
-;(async function () {
-  let { projectData } = await ipcRenderer.invoke('exportPDF:getData')
-  let { currentBoardData } = projectData
+const saveState = () => api().setState && api().setState({
+  paperSize: currentOptions.paperSize,
+  rows: currentOptions.rows,
+  cols: currentOptions.cols,
+  spacing: currentOptions.spacing
+}).catch(() => {})
 
-  aspectRatio = currentBoardData.aspectRatio
-  currentScene = projectData.currentScene
-  scriptData = projectData.scriptData
+const updateOption = (key, selector, parser = value => value) => {
+  $(selector).addEventListener('change', event => {
+    currentOptions[key] = parser(event.target.value)
+    saveState()
+    generate()
+  })
+}
 
-  updateHTML()
-  generateWorksheet()
+const load = async () => {
+  const response = await api().getData()
+  projectData = response && response.projectData
+  applyTranslations(response && response.translations)
+  const saved = api().getState ? await api().getState() : null
+  if (saved && saved.ok && saved.state) currentOptions = { ...currentOptions, ...saved.state }
+  $('#paper-size').value = currentOptions.paperSize
+  $('#row-number').value = String(currentOptions.rows)
+  $('#column-number').value = String(currentOptions.cols)
+  $('#spacing').value = String(currentOptions.spacing)
 
-  loadWindow()
-})()
+  updateOption('paperSize', '#paper-size')
+  updateOption('rows', '#row-number', value => Math.max(1, Math.min(8, Number(value))))
+  updateOption('cols', '#column-number', value => Math.max(1, Math.min(8, Number(value))))
+  updateOption('spacing', '#spacing', value => Math.max(0, Math.min(100, Number(value))))
 
-window.ondragover = () => { return false }
-window.ondragleave = () => { return false }
-window.ondragend = () => { return false }
-window.ondrop = () => { return false }
+  $('#prev_button').onclick = () => queuePage(pageNumber - 1)
+  $('#next_button').onclick = () => queuePage(pageNumber + 1)
+  $('#close-button').onclick = () => api().hide && api().hide()
+  $('#print-button').onclick = async () => {
+    const result = await api().print({ ...currentOptions, aspectRatio: projectData.currentBoardData.aspectRatio, currentScene: projectData.currentScene })
+    if (!result || !result.ok) alert('Unable to print worksheet.')
+    else api().playSfx && api().playSfx('positive')
+  }
+  $('#pdf-button').onclick = async () => {
+    const result = await api().exportPdf({ ...currentOptions, aspectRatio: projectData.currentBoardData.aspectRatio, currentScene: projectData.currentScene })
+    if (!result || !result.ok) alert('Unable to export worksheet.')
+  }
+  window.addEventListener('keyup', event => {
+    if (event.key === 'Escape') api().hide && api().hide()
+    if (event.key === 'ArrowLeft') queuePage(pageNumber - 1)
+    if (event.key === 'ArrowRight') queuePage(pageNumber + 1)
+  })
+  await generate()
+}
+
+load().catch(error => {
+  console.error(error)
+  alert('Unable to open worksheet printing.')
+})

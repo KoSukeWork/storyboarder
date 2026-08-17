@@ -9,12 +9,15 @@ const DIST_FOLDER = '__temp'
 const run = (command, args = [], cwd) => {
   const ls = spawnSync(command, args, {
     cwd,
-    shell: true,
-    env: { PATH: process.env.PATH }
+    shell: false,
+    env: { ...process.env },
+    stdio: 'inherit',
+    windowsHide: true
   })
-
-  ls.stdout && console.log(ls.stdout.toString())
-  ls.stderr && console.error(ls.stderr.toString())
+  if (ls.error) throw ls.error
+  if (ls.status !== 0) {
+    throw new Error(`${command} ${args.join(' ')} failed with exit code ${ls.status}`)
+  }
 }
 
 const src = path.join(__dirname, SOURCE_FOLDER)
@@ -30,14 +33,14 @@ fs.copySync(src, dst)
 
 // STEP 2 - init and setup git repository
 console.log('Initializing git pepository')
-run('git init', [], dst)
-run(`git remote add heroku ${GIT_URL}`, [], dst)
-run('git add .', [], dst)
-run('git commit -m "update"', [], dst)
+run('git', ['init'], dst)
+run('git', ['remote', 'add', 'heroku', GIT_URL], dst)
+run('git', ['add', '.'], dst)
+run('git', ['commit', '-m', 'update'], dst)
 
 // STEP 3 - push to herku
 console.log('Deploying...')
-run('git push --force heroku master', [], dst)
+run('git', ['push', '--force', 'heroku', 'master'], dst)
 
 // STEP 4 - remove temp dist dir
 console.log('Cleaning up')

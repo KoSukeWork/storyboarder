@@ -1,0 +1,2 @@
+const inherits = (child, parent) => { parent = parent || function Parent () {}; child.super_ = parent; child.prototype = Object.create(parent.prototype, { constructor: { value: child, enumerable: false, writable: true, configurable: true } }); return child }
+module.exports = { inherits, promisify: fn => (...args) => new Promise((resolve, reject) => fn(...args, (error, value) => error ? reject(error) : resolve(value))), format: (...args) => args.map(String).join(' ') }

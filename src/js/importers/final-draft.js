@@ -1,7 +1,7 @@
-const fs = require('fs')
 const util = require('../utils')
 const xml2js = require('xml2js')
 const R = require('ramda')
+const { MAX_PROJECT_FILE_SIZE, readFileUtf8Bounded } = require('../utils/security')
 
 const wordCount = text =>
   text &&
@@ -35,7 +35,7 @@ const _wrapAsync = fn => async (...rest) =>
 const parseXmlStringAsync = _wrapAsync((new xml2js.Parser()).parseString)
 
 const readFdxFile = async filepath => {
-  return await parseXmlStringAsync(fs.readFileSync(filepath))
+  return await parseXmlStringAsync(readFileUtf8Bounded(filepath, MAX_PROJECT_FILE_SIZE))
 }
 
 
@@ -213,7 +213,7 @@ const getScriptCharacters = scriptData =>
         })
       )(scene.script)
       return characters
-    }, []),
+    }, Object.create(null)),
     R.toPairs
   )(scriptData)
 
@@ -230,7 +230,7 @@ const getScriptLocations = scriptData =>
 
       locations[location] = R.defaultTo(0, locations[location]) + 1
       return locations
-    }, []))
+    }, Object.create(null)))
 
 module.exports = {
   readFdxFile,

@@ -9,32 +9,36 @@ const boardFileImageSize = boardFileData =>
 const boardFilenameForExport = (board, index, basenameWithoutExt) =>
   `${basenameWithoutExt}-board-` + util.zeroFill(5, index + 1) + '.png'
 
+const boardUrl = board => board && typeof board.url === 'string' ? board.url : ''
+
 const boardFilenameForThumbnail = board =>
-  board.url.replace('.png', '-thumbnail.png')
+  boardUrl(board).replace('.png', '-thumbnail.png')
 
 const boardFilenameForLink = board =>
-  board.url.replace('.png', '.psd')
+  boardUrl(board).replace('.png', '.psd')
   // alternatively, could calculate link filename from url filename, preserving link extension:
   // return path.basename(board.url, path.extname(board.url)) + path.extname(board.link)
 
 const boardFilenameForLayer = (board, layerKey) =>
-  board.url.replace('.png', `-${layerKey}.png`)
+  boardUrl(board).replace('.png', `-${layerKey}.png`)
 
 // used for shot-generator
 const boardFilenameForLayerThumbnail = (board, layerName) =>
-  board.url.replace('.png', `-${layerName}-thumbnail.jpg`)
+  boardUrl(board).replace('.png', `-${layerName}-thumbnail.jpg`)
 
 const boardFilenameForPosterFrame = (board) =>
-  board.url.replace('.png', `-posterframe.jpg`)
+  boardUrl(board).replace('.png', `-posterframe.jpg`)
 
 const boardFilenameForCameraPlot = (board) =>
-  board.url.replace('.png', `-camera-plot.png`)
+  boardUrl(board).replace('.png', `-camera-plot.png`)
 
 // TODO review usage
 // array of fixed size, ordered positions
 const boardOrderedLayerFilenames = board => {
   let indices = []
   let filenames = []
+
+  if (!board || typeof board !== 'object' || Array.isArray(board)) return { indices, filenames }
 
   // HACK hardcoded
   // see StoryboarderSketchPane#visibleLayersIndices
@@ -91,6 +95,8 @@ const setup = board => {
 }
 
 const updateUrlsFromIndex = (board, index) => {
+  if (!board || typeof board !== 'object' || Array.isArray(board)) return board
+  if (!board.layers || typeof board.layers !== 'object' || Array.isArray(board.layers)) board.layers = {}
   // TODO base on board number instead of external index information
   board.url = 'board-' + (index + 1) + '-' + board.uid + '.png'
 
@@ -102,6 +108,7 @@ const updateUrlsFromIndex = (board, index) => {
 }
 
 const getMediaDescription = board => {
+  board = board && typeof board === 'object' && !Array.isArray(board) ? board : {}
   return {
     // does board layers exist and is it not an empty object?
     layers: (board.layers && Object.keys(board.layers).length)
@@ -109,20 +116,20 @@ const getMediaDescription = board => {
       ? Object.entries(board.layers).reduce((coll, [name, layer]) => {
         return {
           ...coll,
-          [name]: layer.url
+          [name]: layer && typeof layer.url === 'string' ? layer.url : undefined
         }
       }, {})
       : {},
     thumbnail: boardFilenameForThumbnail(board),
     posterframe: boardFilenameForPosterFrame(board),
-    link: board.link == null ? undefined : board.link,
-    audio: board.audio == null ? undefined : board.audio.filename,
+    link: typeof board.link === 'string' ? board.link : undefined,
+    audio: board.audio && typeof board.audio.filename === 'string' ? board.audio.filename : undefined,
     layerThumbnails: (board.layers && Object.keys(board.layers).length)
       // return all the layer thumbnails
       ? Object.entries(board.layers).reduce((coll, [name, layer]) => {
         return {
           ...coll,
-          [name]: layer.thumbnail
+          [name]: layer && typeof layer.thumbnail === 'string' ? layer.thumbnail : undefined
         }
       }, {})
       : {},

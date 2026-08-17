@@ -1,18 +1,29 @@
 let i18n = require('i18next')
 let i18nextBackend = require('i18next-fs-backend')
-const { app } = process && process.type == 'renderer'
-  ? require('@electron/remote')
-  : require('electron')
+const { app } = require('electron')
 const path = require('path')
 const { initReactI18next } = require("react-i18next")
 const {settings:config} = require('./language.config')
+
+const LANGUAGE_FILE_NAME = /^[^\\/:*?"<>|\u0000-\u001f]{1,128}$/
+const safeLanguageName = value => {
+    if (typeof value !== 'string' || value === '.' || value === '..' ||
+        path.isAbsolute(value) || path.win32.isAbsolute(value) || !LANGUAGE_FILE_NAME.test(value)) {
+        return 'en-US'
+    }
+    return value
+}
 
 const loadPath = path.join(app.getAppPath(), 'src', 'js', 'locales')
 const userDataPath = app.getPath('userData')
 
 const getLoadPath = (lng, namespace) => {
+    lng = safeLanguageName(lng)
     let builtInPath = path.join(loadPath, `${lng}.json`)
-    if(config.getSettingByKey("builtInLanguages").some((item) => item.fileName === lng)) {
+    const builtInLanguages = Array.isArray(config.getSettingByKey("builtInLanguages"))
+        ? config.getSettingByKey("builtInLanguages")
+        : []
+    if(builtInLanguages.some((item) => item && item.fileName === lng)) {
         return builtInPath
     } else {
         return path.join(userDataPath, "locales", `${lng}.json`)
@@ -25,12 +36,12 @@ const i18nextOptions = {
         escapeValue: false
     },
 
-    lng: config.getSettingByKey('selectedLanguage'),
+    lng: safeLanguageName(config.getSettingByKey('selectedLanguage')),
     react: {
         useSuspense: true,
         wait: false
     },
-    fallbackLng:  config.getSettingByKey('defaultLanguage'),
+    fallbackLng: safeLanguageName(config.getSettingByKey('defaultLanguage')),
     backend: {
         loadPath: getLoadPath,
 

@@ -1,4 +1,4 @@
-import { useRef, useEffect, useState, useMemo } from 'react'
+import React, { useRef, useEffect, useState, useMemo } from 'react'
 const minWidth = 10
 const Input = ({label, value, type, marginLeft, parent, onChange = () => {}}) => {
     const [currentValue, setCurrentValue] = useState(value)

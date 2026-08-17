@@ -2,6 +2,7 @@
 <html>
   <head>
     <meta charset="UTF-8">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'">
     <link rel="stylesheet" href="./css/fonts.css">
     <link rel="stylesheet" href="./css/keycommand-window.css">
     <title>Key Commands</title>
@@ -20,7 +21,5 @@
     </div>
   </div>
   </body>
-  <script>
-    require('./js/window/keycommand-window')
-  </script>
+  <script src="./js/window/keycommand-window.js"></script>
 </html>

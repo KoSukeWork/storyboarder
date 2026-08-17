@@ -7,7 +7,7 @@ const {
   getTemporaryFilepath,
   getExportFilepath,
   toPresetMemento
-} = require('./context-helpers')
+} = require('./context-helpers-renderer')
 
 const specs = {
   paperSize: {

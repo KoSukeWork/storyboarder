@@ -349,3 +349,19 @@ kbd {
 }*/
 
 
+.output {
+  bottom: 0;
+  color: rgba(255, 255, 255, 0.8);
+  font-size: 13px;
+  left: 0;
+  position: absolute;
+}
+
+.output-label {
+  color: rgba(255, 255, 255, 0.6);
+  letter-spacing: 0.05em;
+}
+
+.output-value {
+  color: rgba(255, 255, 255, 0.8);
+}

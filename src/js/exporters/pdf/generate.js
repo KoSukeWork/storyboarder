@@ -1,9 +1,9 @@
 const path = require('path')
 const PDFDocument = require('pdfkit')
-const v = require('@thi.ng/vectors')
-const { Rect } = require('@thi.ng/geom')
+const { Rect, v } = require('./geometry')
 const dayjs = require('dayjs')
 const fs = require('fs')
+const { resolveForWriteInside } = require('../../utils/security')
 
 const pkg = require('../../../../package.json')
 
@@ -183,7 +183,7 @@ const drawBoard = (doc, { direction, ...options }, cfg) =>
   : null
 
 const drawImageOrPlaceholder = (doc, { filepath, rect }, cfg) => {
-  if (fs.existsSync(filepath)) {
+  if (filepath && fs.existsSync(filepath)) {
     doc.image(
       filepath,
       ...rect.pos,
@@ -255,8 +255,14 @@ const drawBoardRow = (doc, { rect, scene, board, imagesPath }, cfg) => {
   //
   // image
   //
+  let posterframePath
+  try {
+    posterframePath = resolveForWriteInside(imagesPath, boardFilenameForPosterFrame(board))
+  } catch (err) {
+    posterframePath = null
+  }
   drawImageOrPlaceholder(doc, {
-    filepath: path.join(imagesPath, boardFilenameForPosterFrame(board)),
+    filepath: posterframePath,
     rect: imageR
   }, cfg)
 
@@ -465,8 +471,14 @@ const drawBoardColumn = (doc, { rect, container, scene, board, imagesPath }, cfg
   //
   // image
   //
+  let posterframePath
+  try {
+    posterframePath = resolveForWriteInside(imagesPath, boardFilenameForPosterFrame(board))
+  } catch (err) {
+    posterframePath = null
+  }
   drawImageOrPlaceholder(doc, {
-    filepath: path.join(imagesPath, boardFilenameForPosterFrame(board)),
+    filepath: posterframePath,
     rect: imageR
   }, cfg)
 

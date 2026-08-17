@@ -2,6 +2,7 @@
 <html>
   <head>
     <meta charset="UTF-8">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'; connect-src 'self'">
     <link rel="stylesheet" href="./css/fonts.css">
     <link rel="stylesheet" href="./css/welcome.css">
     <title>Welcome</title>
@@ -54,7 +55,5 @@
       </div>
     </div>
   </body>
-  <script>
-    require('./js/window/welcome-window')
-  </script>
+  <script src="./js/window/welcome-window.js"></script>
 </html>

@@ -313,6 +313,7 @@ var cursor_Cursor = /** @class */ (function (_super) {
         return _this;
     }
     Cursor.prototype.renderCursor = function (e) {
+        if (!this.lastPointer || !this.container || !this.position || !this.anchor) return;
         this.lastPointer.set(e.x, e.y);
         var point = this.container.localizePoint(this.lastPointer);
         this.position.set(point.x, point.y);

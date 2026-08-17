@@ -8,6 +8,7 @@ const {
 } = require('../models/board')
 
 const util = require('../utils')
+const { resolveInside, resolveForWriteInside } = require('../utils/security')
 
 const DEFAULT_REFERENCE_LAYER_OPACITY = 0.75
 
@@ -50,7 +51,7 @@ const exportFlattenedBoard = (board, filenameForExport, size, projectFileAbsolut
         } else {
           imageData = canvas.toDataURL().replace(/^data:image\/\w+;base64,/, '')
         }
-        let pathToExport = path.join(outputPath, filenameForExport)
+        let pathToExport = resolveForWriteInside(outputPath, filenameForExport)
         fs.writeFileSync(pathToExport, imageData, 'base64')
         resolve(pathToExport)
       }).catch(err => {
@@ -77,14 +78,33 @@ const getCanvasImageSourcesDataForBoard = (board, projectFileAbsolutePath) => {
   return new Promise((resolve, reject) => {
     let { indices, filenames } = boardOrderedLayerFilenames(board)
 
-    let getImageFilePath = (filename) => path.join(path.dirname(projectFileAbsolutePath), 'images', filename)
+    let getImageFilePath = (filename) => {
+      if (typeof filename !== 'string' || filename.length > 4096) throw new Error('Invalid project media filename')
+      const [mediaFilename, query] = filename.split('?')
+      const resolved = resolveInside(path.join(path.dirname(projectFileAbsolutePath), 'images'), mediaFilename)
+      return query == null ? resolved : `${resolved}?${query}`
+    }
 
-    let loaders = filenames.map(filename => getImage(getImageFilePath(filename + '?' + Math.random())))
+    let loaders = filenames.map((filename, n) => {
+      try {
+        if (typeof filename !== 'string') throw new Error('Invalid project media filename')
+        return {
+          layerIndex: indices[n],
+          promise: getImage(getImageFilePath(filename + '?' + Math.random()))
+        }
+      } catch (err) {
+        console.warn(`Skipping invalid project media path: ${filename}`)
+        return { layerIndex: indices[n], promise: Promise.resolve(null) }
+      }
+    })
 
-    Promise.all(loaders).then(images => {
+    Promise.all(loaders.map(loader => loader.promise.catch(err => {
+      console.warn(`Could not load project media: ${err.message}`)
+      return null
+    }))).then(images => {
       let canvasImageSourcesData = []
       images.forEach((canvasImageSource, n) => {
-        let layerIndex = indices[n]
+        let layerIndex = loaders[n].layerIndex
         if (canvasImageSource) {
 
           // default opacity for all layers is 1
@@ -159,7 +179,7 @@ const flattenBoardToCanvas = (board, canvas, size, projectFileAbsolutePath) => {
 const ensureExportsPathExists = (projectFileAbsolutePath) => {
   let dirname = path.dirname(projectFileAbsolutePath)
 
-  let exportsPath = path.join(dirname, 'exports')
+  let exportsPath = resolveForWriteInside(dirname, 'exports')
 
   if (!fs.existsSync(exportsPath)) {
     fs.mkdirSync(exportsPath)

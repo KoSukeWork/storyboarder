@@ -1,6 +1,6 @@
-const remote = require('@electron/remote')
+const remote = require('../utils/renderer-runtime')
 let { acceleratorAsHtml } = require('../utils/index')
-const prefsModule = require('@electron/remote').require('./prefs')
+const prefsModule = require('../utils/renderer-runtime').require('./prefs')
 const Tooltip = require('tether-tooltip')
 const sfx = require('../wonderunit-sound')
 

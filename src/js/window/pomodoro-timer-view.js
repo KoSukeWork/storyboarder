@@ -2,14 +2,30 @@ const {shell, ipcRenderer} = require('electron')
 const EventEmitter = require('events').EventEmitter
 const Tether = require('tether')
 const PomodoroTimer = require('../pomodoro-timer')
-const prefsModule = require('@electron/remote').require('./prefs')
+const prefsModule = require('../utils/renderer-runtime').require('./prefs')
 const userDataHelper = require('../files/user-data-helper')
 const sfx = require('../wonderunit-sound')
 const dayjs = require('dayjs')
 const duration = require('dayjs/plugin/duration')
 dayjs.extend(duration)
 const fs = require('fs')
+const path = require('path')
+const { pathToFileURL } = require('url')
 const tooltips = require('./tooltips')
+
+const safeRecordingPath = value => {
+  if (typeof value !== 'string' || value.length === 0 || value.length > 4096 || value.includes('\0') || !path.isAbsolute(value)) return null
+  // Pomodoro recordings are GIFs produced by the recorder.  Do not turn an
+  // arbitrary persisted URL (especially SVG/HTML) into a renderer resource.
+  if (path.extname(value).toLowerCase() !== '.gif') return null
+  try {
+    const stat = fs.statSync(value)
+    if (!stat.isFile() || stat.size > 100 * 1024 * 1024) return null
+    return { path: value, url: pathToFileURL(value).toString() }
+  } catch (err) {
+    return null
+  }
+}
 
 class PomodorTimerView extends EventEmitter {
   constructor() {
@@ -19,7 +35,10 @@ class PomodorTimerView extends EventEmitter {
     this.innerEl = null
     this.minutesInput = null
 
-    this.pomodoroTimerMinutes = prefsModule.getPrefs('main')['pomodoroTimerMinutes']
+    const configuredMinutes = Number(prefsModule.getPrefs('main')['pomodoroTimerMinutes'])
+    this.pomodoroTimerMinutes = Number.isFinite(configuredMinutes)
+      ? Math.max(1, Math.min(500, Math.round(configuredMinutes)))
+      : 25
 
     this.pomodoroTimer = new PomodoroTimer()
     this.pomodoroTimer.on('update', (data)=>{
@@ -56,7 +75,7 @@ class PomodorTimerView extends EventEmitter {
       case "running":
         let remainingView = this.el.querySelector('#pomodoro-timer-remaining', true)
         remainingView.style.display = "inline-block"
-        remainingView.innerHTML = data.remainingFriendly
+        remainingView.textContent = data.remainingFriendly == null ? '' : String(data.remainingFriendly)
         break
       case "paused":
         break
@@ -180,18 +199,25 @@ class PomodorTimerView extends EventEmitter {
   }
 
   updateRecordingsView() {
-    let recordingsView = ''
+    const recordingsEl = this.el.querySelector('#pomodoro-timer-recordings')
+    if (!recordingsEl) return
+    recordingsEl.replaceChildren()
     if(this.recordings && this.recordings.length) {
-      let isMain = true
       let existingRecordings = 0;
       for(let i=0; i<this.recordings.length && existingRecordings<5; i++) {
-        let recordingPath = this.recordings[i]
-        if(fs.existsSync(recordingPath)) {
-          recordingsView += `<div><img class="pomodoro-timer-recording" src="${recordingPath}" data-filepath="${recordingPath}" draggable=false></img></div>`
+        const recording = safeRecordingPath(this.recordings[i])
+        if(recording) {
+          const wrapper = document.createElement('div')
+          const image = document.createElement('img')
+          image.className = 'pomodoro-timer-recording'
+          image.src = recording.url
+          image.dataset.filepath = recording.path
+          image.draggable = false
+          wrapper.appendChild(image)
+          recordingsEl.appendChild(wrapper)
           existingRecordings++
         }
       }
-      this.el.querySelector('#pomodoro-timer-recordings').innerHTML = recordingsView
       let recordingImages = this.el.querySelectorAll(".pomodoro-timer-recording")
       for(let i=0; i<recordingImages.length && i<5; i++) {
         let recordingImage = recordingImages[i]
@@ -200,20 +226,29 @@ class PomodorTimerView extends EventEmitter {
           shell.showItemInFolder(event.target.dataset.filepath)
         })
       }
-      this.el.querySelector('#pomodoro-timer-recordings-label').innerHTML = `Latest Timelapses`
+      this.el.querySelector('#pomodoro-timer-recordings-label').textContent = 'Latest Timelapses'
       this.el.querySelector('#pomodoro-timer-recordings-label').style.display = `block`
     } else {
-      this.el.querySelector('#pomodoro-timer-recordings-label').innerHTML = ``
+      this.el.querySelector('#pomodoro-timer-recordings-label').textContent = ''
       this.el.querySelector('#pomodoro-timer-recordings-label').style.display = `none`
     }
   }
 
   newRecordingReady(filepaths) {
     if(filepaths && filepaths.length) {
-      let recordingPath = filepaths[0]
-      this.recordings = filepaths.concat(this.recordings)
-      let recordingsView = `<div><img class="pomodoro-timer-recording" src="${recordingPath}" data-filepath="${recordingPath}" draggable=false></img></div>`
-      this.el.querySelector('#pomodoro-timer-recordings').innerHTML = recordingsView
+      const recording = safeRecordingPath(filepaths[0])
+      if (!recording) return
+      this.recordings = filepaths.concat(this.recordings || [])
+      const recordingsEl = this.el.querySelector('#pomodoro-timer-recordings')
+      recordingsEl.replaceChildren()
+      const wrapper = document.createElement('div')
+      const image = document.createElement('img')
+      image.className = 'pomodoro-timer-recording'
+      image.src = recording.url
+      image.dataset.filepath = recording.path
+      image.draggable = false
+      wrapper.appendChild(image)
+      recordingsEl.appendChild(wrapper)
       let recordingImages = this.el.querySelectorAll(".pomodoro-timer-recording")
       for(let i=0; i<recordingImages.length && i<5; i++) {
         let recordingImage = recordingImages[i]

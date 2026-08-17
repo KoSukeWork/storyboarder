@@ -1,9 +1,6 @@
-require('electron-redux/preload')
 const {ipcRenderer, shell, nativeImage, clipboard} = require('electron')
-const remote = require('@electron/remote')
-const remoteMain = remote.require('@electron/remote/main')
+const remote = require('../utils/renderer-runtime')
 const { app } = remote
-const child_process = require('child_process')
 const fs = require('fs-extra')
 const path = require('path')
 const menu = require('../menu')
@@ -67,9 +64,32 @@ const AudioFileControlView = require('./audio-file-control-view')
 const LinkedFileManager = require('./linked-file-manager')
 
 const getIpAddress = require('../utils/getIpAddress')
+const {
+  escapeHtml,
+  sanitizeMarkup,
+  assertSafeRelativePath,
+  MAX_PROJECT_FILE_SIZE,
+  readFileUtf8Bounded,
+  resolveInside,
+  resolveForWriteInside,
+  safeFilename,
+  isSafeExternalUrl
+} = require('../utils/security')
 
 const pkg = require('../../../package.json')
 const { scaleBy, setScale, resizeScale, initialize} = require('../utils/uiScale')
+
+document.documentElement.dataset.storyboarderRenderer = 'loaded'
+
+window.addEventListener('error', event => {
+  ipcRenderer.send(
+    'errorInWindow',
+    String(event.message || 'Renderer error').slice(0, 4096),
+    String(event.filename || '').slice(0, 4096),
+    Number(event.lineno) || 0,
+    Number(event.colno) || 0
+  )
+})
 
 const sharedObj = remote.getGlobal('sharedObj')
 //#region Localization 
@@ -99,7 +119,8 @@ ipcRenderer.on("languageChanged", (event, lng) => {
 })
 
 const translateHtml = (elementName, traslationKey) => {
-  document.querySelector(elementName).innerHTML = i18n.t(`${traslationKey}`)
+  const element = document.querySelector(elementName)
+  if (element) element.innerHTML = sanitizeMarkup(i18n.t(`${traslationKey}`))
 }
 
 const translateCheckbox = (elementName, traslationKey) => {
@@ -241,6 +262,49 @@ let boardSettings
 let currentPath
 let currentScene = 0
 
+const MAX_PROJECT_TEXT_LENGTH = 256 * 1024
+const clampNumber = (value, fallback, min, max) => {
+  const number = Number(value)
+  return Number.isFinite(number) && number >= min && number <= max ? number : fallback
+}
+
+const normalizeText = value => {
+  if (value == null) return ''
+  return String(value).slice(0, MAX_PROJECT_TEXT_LENGTH)
+}
+
+const normalizeScriptNode = (node, depth = 0) => {
+  const normalized = { ...node }
+  for (const key of ['text', 'slugline', 'synopsis', 'character']) {
+    if (normalized[key] != null) normalized[key] = normalizeText(normalized[key])
+  }
+  if (normalized.duration != null) normalized.duration = clampNumber(normalized.duration, 0, 0, 24 * 60 * 60 * 1000)
+  if (normalized.scene_number != null) normalized.scene_number = clampNumber(normalized.scene_number, 0, 0, 1000000)
+  if (Array.isArray(normalized.script) && depth < 4) {
+    normalized.script = normalized.script
+      .filter(item => item && typeof item === 'object' && !Array.isArray(item))
+      .slice(0, 10000)
+      .map(item => normalizeScriptNode(item, depth + 1))
+  } else if (normalized.script != null) {
+    delete normalized.script
+  }
+  return normalized
+}
+
+const normalizeScriptData = value => Array.isArray(value)
+  ? value
+    .filter(node => node && typeof node === 'object' && !Array.isArray(node))
+    .slice(0, 10000)
+    .map(normalizeScriptNode)
+  : []
+
+const normalizeStringRows = value => Array.isArray(value)
+  ? value
+    .filter(Array.isArray)
+    .slice(0, 10000)
+    .map(row => row.slice(0, 2).map(normalizeText))
+  : []
+
 let boardFileDirty = false
 let boardFileDirtyTimer
 
@@ -257,6 +321,119 @@ const ALLOWED_AUDIO_FILE_EXTENSIONS = [
 
 let imageFileDirtyTimer
 let isSavingImageFile = false // lock for saveImageFile
+
+const getImagesPath = () => path.join(boardPath, 'images')
+const safeMediaPath = (filename, { forWrite = false } = {}) => {
+  try {
+    return forWrite
+      ? resolveForWriteInside(getImagesPath(), filename)
+      : resolveInside(getImagesPath(), filename)
+  } catch (err) {
+    log.warn('Rejected unsafe project media path', filename, err.message)
+    return null
+  }
+
+}
+
+// Renderer media reads use a dedicated protocol instead of exposing arbitrary
+// file:// URLs.  Filesystem callers continue to receive the absolute path
+// from safeMediaPath above.
+const mediaUrlForPath = filename => {
+  try {
+    const projectRoot = scriptFilePath
+      ? path.dirname(scriptFilePath)
+      : path.dirname(boardFilename)
+    const relative = path.relative(projectRoot, filename)
+    assertSafeRelativePath(relative)
+    const encoded = relative
+      .split(/[\\/]+/)
+      .map(part => encodeURIComponent(part))
+      .join('/')
+    return `storyboarder-media://current/${encoded}`
+  } catch (err) {
+    return ''
+  }
+}
+
+const setSafeText = (selector, value) => {
+  const element = document.querySelector(selector)
+  if (element) element.textContent = value == null ? '' : String(value)
+}
+
+// A project file is user-controlled input.  Normalize malformed media
+// references before any board-model helper calls `.replace()` or a renderer
+// attempts to load the referenced file.  Missing files remain valid references
+// (verifyScene will create placeholders); only malformed/path-traversal values
+// are removed or replaced.
+const normalizeProjectMediaReferences = () => {
+  if (!boardData || !Array.isArray(boardData.boards)) return
+
+  boardData.aspectRatio = clampNumber(boardData.aspectRatio, 1.7777777778, 0.1, 10)
+  boardData.fps = clampNumber(boardData.fps, 24, 1, 240)
+  boardData.defaultBoardTiming = clampNumber(boardData.defaultBoardTiming, 2000, 1, 24 * 60 * 60 * 1000)
+
+  boardData.boards = boardData.boards
+    .filter(board => board && typeof board === 'object' && !Array.isArray(board))
+    .slice(0, 10000)
+    .map((board, index) => {
+      if (board.dialogue != null) board.dialogue = normalizeText(board.dialogue)
+      if (board.action != null) board.action = normalizeText(board.action)
+      if (board.notes != null) board.notes = normalizeText(board.notes)
+      if (board.shot != null && typeof board.shot !== 'string' && typeof board.shot !== 'number') board.shot = normalizeText(board.shot)
+      if (board.duration != null) board.duration = clampNumber(board.duration, boardData.defaultBoardTiming, 0, 24 * 60 * 60 * 1000)
+      if (board.time != null) board.time = clampNumber(board.time, 0, 0, 24 * 60 * 60 * 1000)
+      try {
+        assertSafeRelativePath(board.url)
+      } catch (err) {
+        board.url = `board-${index + 1}-${safeFilename(board.uid, 'board')}.png`
+      }
+
+      if (!board.layers || typeof board.layers !== 'object' || Array.isArray(board.layers)) {
+        board.layers = {}
+      } else {
+        for (const [name, layer] of Object.entries(board.layers)) {
+          // JSON can contain keys that collide with Object.prototype.  Do
+          // not let a hostile layer name change prototypes or be interpreted
+          // as an inherited object by later rendering code.
+          if (
+            typeof name !== 'string' || name.length > 64 ||
+            name === '__proto__' || name === 'prototype' || name === 'constructor'
+          ) {
+            delete board.layers[name]
+            continue
+          }
+          if (!layer || typeof layer !== 'object' || typeof layer.url !== 'string') {
+            delete board.layers[name]
+            continue
+          }
+          try {
+            assertSafeRelativePath(layer.url)
+          } catch (err) {
+            delete board.layers[name]
+            continue
+          }
+          if (layer.thumbnail != null) {
+            try { assertSafeRelativePath(layer.thumbnail) } catch (err) { delete layer.thumbnail }
+          }
+        }
+      }
+
+      if (board.link != null) {
+        try { assertSafeRelativePath(board.link) } catch (err) { delete board.link }
+      }
+
+      if (
+        board.audio != null &&
+        (!board.audio || typeof board.audio !== 'object' || typeof board.audio.filename !== 'string')
+      ) {
+        delete board.audio
+      } else if (board.audio) {
+        try { assertSafeRelativePath(board.audio.filename) } catch (err) { delete board.audio }
+      }
+
+      return board
+    })
+}
 
 let drawIdleTimer
 
@@ -297,8 +474,6 @@ let sceneTimelineView
 
 let storyboarderSketchPane
 let fakePosterFrameCanvas
-
-let exportWebWindow
 
 let dragMode = false
 let preventDragMode = false
@@ -366,10 +541,12 @@ const load = async (event, args) => {
       scriptFilePath = args[0]
 
       // there is scriptData - the window opening is a script type
-      scriptData = args[1]
-      locations = args[2]
-      characters = args[3]
-      boardSettings = args[4]
+      scriptData = normalizeScriptData(args[1])
+      locations = normalizeStringRows(args[2])
+      characters = normalizeStringRows(args[3])
+      boardSettings = args[4] && typeof args[4] === 'object' && !Array.isArray(args[4])
+        ? args[4]
+        : {}
       currentPath = args[5]
 
       await updateSceneFromScript()
@@ -380,13 +557,17 @@ const load = async (event, args) => {
     } else {
       logToView({ type: 'progress', message: 'Loading Project File' })
       // if not, its just a simple single boarder file
+      scriptFilePath = undefined
+      scriptData = undefined
       boardFilename = args[0]
-      boardPath = boardFilename.split(path.sep)
-      boardPath.pop()
-      boardPath = boardPath.join(path.sep)
+      boardPath = path.dirname(boardFilename)
       log.info(' BOARD PATH: ', boardFilename)
       try {
-        boardData = JSON.parse(fs.readFileSync(boardFilename))
+        boardData = JSON.parse(readFileUtf8Bounded(boardFilename, MAX_PROJECT_FILE_SIZE))
+        if (!boardData || !Array.isArray(boardData.boards)) {
+          throw new Error('The project does not contain a valid boards array')
+        }
+        normalizeProjectMediaReferences()
         ipcRenderer.send('analyticsEvent', 'Application', 'open', boardFilename, boardData.boards.length)
 
         store.dispatch({
@@ -722,8 +903,6 @@ const migrateScene = () => {
   // see: https://github.com/wonderunit/storyboarder/issues/2275
   migrateStringDurations()
 
-  let boardImagesPath = path.join(boardPath, 'images')
-
   // Old file may contain string board.duration due to issue #2275
   for (let board of boardData.boards) {
     if (typeof(board.duration) != 'number') {
@@ -737,7 +916,8 @@ const migrateScene = () => {
   // if at least one board.url file exists, consider this an old project
   let needsMigration = false
   for (let board of boardData.boards) {
-    if (fs.existsSync(path.join(boardImagesPath, board.url))) {
+    const boardImagePath = safeMediaPath(board.url)
+    if (boardImagePath && fs.existsSync(boardImagePath)) {
       if (!(board.layers && board.layers.fill)) {
         // needs to be migrated
         needsMigration = true
@@ -794,7 +974,8 @@ const migrateScene = () => {
   // see: https://github.com/wonderunit/storyboarder/issues/1160
   for (let board of boardData.boards) {
     // if a file exists for the board.url, we haven't migrated yet
-    if (fs.existsSync(path.join(boardImagesPath, board.url))) {
+    const boardImagePath = safeMediaPath(board.url)
+    if (boardImagePath && fs.existsSync(boardImagePath)) {
       // catch edge case where fill layer already exists
       if (board.layers && board.layers.fill) {
         log.warn('Found an old main layer but fill already exists')
@@ -810,7 +991,9 @@ const migrateScene = () => {
         // move main layer to fill layer
         let filename = boardModel.boardFilenameForLayer(board, 'fill')
         log.info(`Moving ${board.url} to new fill layer ${filename}`)
-        fs.moveSync(path.join(boardImagesPath, board.url), path.join(boardImagesPath, filename))
+        const destination = safeMediaPath(filename, { forWrite: true })
+        if (!destination) continue
+        fs.moveSync(boardImagePath, destination)
         board.layers.fill = {
           url: filename
         }
@@ -835,7 +1018,8 @@ const verifyScene = async () => {
   //
   let missing = []
   for (let filename of pngFiles) {
-    if (!fs.existsSync(path.join(boardPath, 'images', filename))) {
+    const imagePath = safeMediaPath(filename)
+    if (!imagePath || !fs.existsSync(imagePath)) {
       missing.push(filename)
     }
   }
@@ -867,7 +1051,8 @@ const verifyScene = async () => {
   //
   for (let board of boardData.boards) {
     if (board.link) {
-      if (!fs.existsSync(path.join(boardPath, 'images', board.link))) {
+      const linkPath = safeMediaPath(board.link)
+      if (!linkPath || !fs.existsSync(linkPath)) {
       let message = `[WARNING] This scene is missing the linked file ${board.link}. ` +
                     `It will be unlinked.`
         log.warn(message)
@@ -887,7 +1072,8 @@ const verifyScene = async () => {
 
   let boardsWithMissingPosterFrames = []
   for (let board of boardData.boards) {
-    if (!fs.existsSync(path.join(boardPath, 'images', boardModel.boardFilenameForPosterFrame(board)))) {
+    const posterPath = safeMediaPath(boardModel.boardFilenameForPosterFrame(board))
+    if (!posterPath || !fs.existsSync(posterPath)) {
       if (boardsWithMissingPosterFrames.length == 0) {
         notifications.notify({ message: 'Generating missing posterframes. Please wait …', timing: 60 })
       }
@@ -1200,7 +1386,8 @@ const loadBoardUI = async () => {
     let state = store.getState()
     if (state.toolbar.activeTool !== 'eraser') {
       let filename = boardModel.boardFilenameForLayer(board, state.toolbar.tools[state.toolbar.activeTool].defaultLayerName)
-      let filepath = path.join(boardPath, 'images', filename)
+      let filepath = safeMediaPath(filename)
+      if (!filepath) return undefined
       try {
         if (fs.statSync(filepath).isFile()) {
           return filepath
@@ -1827,7 +2014,7 @@ const loadBoardUI = async () => {
   audioPlayback = new AudioPlayback({
     store,
     sceneData: boardData,
-    getAudioFilePath: (filename) => path.join(boardPath, 'images', filename)
+    getAudioFilePath: (filename) => safeMediaPath(filename)
   })
   audioFileControlView = new AudioFileControlView({
     // onSelectFile = via drop
@@ -1843,7 +2030,11 @@ const loadBoardUI = async () => {
       let newFilename = `${board.uid}-${path.basename(filepath)}`
 
       // copy to project folder
-      let newpath = path.join(boardPath, 'images', newFilename)
+      let newpath = safeMediaPath(newFilename, { forWrite: true })
+      if (!newpath) {
+        notifications.notify({ message: 'The selected audio filename is not valid.', timing: 5 })
+        return
+      }
 
       let shouldOverwrite = true
       if (fs.existsSync(newpath)) {
@@ -2011,7 +2202,12 @@ const loadBoardUI = async () => {
       let newFilename = `${board.uid}-audio-${datestamp}.wav`
 
       // copy to project folder
-      let newPath = path.join(boardPath, 'images', newFilename)
+      let newPath = safeMediaPath(newFilename, { forWrite: true })
+      if (!newPath) {
+        notifications.notify({ message: 'Error saving audio: invalid project media path.', timing: 5 })
+        recordingToBoardIndex = undefined
+        return
+      }
 
       log.info('saving audio to', newPath)
 
@@ -2124,11 +2320,8 @@ const renderScene = async () => {
         } else {
           let board = boardData.boards.find(b => b.uid === uid)
           if (board) {
-            return path.join(
-              path.dirname(boardFilename),
-              'images',
-              boardModel.boardFilenameForThumbnail(board)
-            )
+            const thumbnailPath = safeMediaPath(boardModel.boardFilenameForThumbnail(board))
+            return thumbnailPath ? mediaUrlForPath(thumbnailPath) : undefined
           } else {
             log.warn('getSrcByUid failed', uid)
             return undefined
@@ -2337,12 +2530,13 @@ const loadImageFileAsDataURL = filepath => {
 const updateAudioDurations = () => {
   let shouldSave = false
   for (let board of boardData.boards) {
-    if (board.audio) {
+    if (board.audio && typeof board.audio.filename === 'string' && board.audio.filename.length) {
       if (!board.audio.duration) {
         // log.info(`duration missing for ${board.uid}. adding.`)
         shouldSave = true
       }
-      board.audio.duration = audioPlayback.getAudioBufferByFilename(board.audio.filename).duration * 1000
+      const audioBuffer = audioPlayback.getAudioBufferByFilename(board.audio.filename)
+      if (audioBuffer) board.audio.duration = audioBuffer.duration * 1000
       // log.info(`set audio duration to ${board.audio.duration}`)
     }
   }
@@ -2436,8 +2630,13 @@ const onDrawIdle = () => {
 
 let saveDataURLtoFile = (dataURL, filename) => {
   let imageData = dataURL.replace(/^data:image\/\w+;base64,/, '')
-  let imageFilePath = path.join(boardPath, 'images', filename)
+  let imageFilePath = safeMediaPath(filename, { forWrite: true })
+  if (!imageFilePath) {
+    notifications.notify({ message: 'The project contains an invalid media filename; the image was not saved.', timing: 8 })
+    return false
+  }
   fs.writeFileSync(imageFilePath, imageData, 'base64')
+  return true
 }
 
 //
@@ -2464,8 +2663,6 @@ let saveImageFile = async () => {
     isSavingImageFile = false
     return
   }
-
-  const imagesPath = path.join(boardPath, 'images')
 
   let board = boardData.boards[indexToSave]
 
@@ -2499,7 +2696,11 @@ let saveImageFile = async () => {
         markBoardFileDirty()
       }
 
-      let imageFilePath = path.join(imagesPath, filename)
+      let imageFilePath = safeMediaPath(filename, { forWrite: true })
+      if (!imageFilePath) {
+        notifications.notify({ message: 'The project contains an invalid layer filename; the layer was not saved.', timing: 8 })
+        continue
+      }
       exportables.push({ index, layer, imageFilePath })
 
       total++
@@ -2623,11 +2824,13 @@ let saveImageFile = async () => {
 
 // TODO performance
 const savePosterFrame = async (board, forceReadFromFiles = false, blank = false) => {
-  const imageFilePath = path.join(
-    boardPath,
-    'images',
-    boardModel.boardFilenameForPosterFrame(board)
+  const imageFilePath = safeMediaPath(
+    boardModel.boardFilenameForPosterFrame(board),
+    { forWrite: true }
   )
+  if (!imageFilePath) {
+    throw new Error('Invalid posterframe path')
+  }
 
   let canvas
 
@@ -2717,7 +2920,9 @@ let openInEditor = async () => {
         let layer = storyboarderSketchPane.sketchPane.layers[index]
         if (board.layers[layer.name]) {
           // load the image to a canvas
-          let image = await exporterCommon.getImage(path.join(boardPath, 'images', board.layers[layer.name].url))
+          const layerPath = safeMediaPath(board.layers[layer.name].url)
+          if (!layerPath) continue
+          let image = await exporterCommon.getImage(layerPath)
 
           let canvas = document.createElement('canvas')
           let context = canvas.getContext('2d')
@@ -2747,7 +2952,11 @@ let openInEditor = async () => {
       }
 
       // assign a PSD file path
-      let psdPath = path.join(boardPath, 'images', boardModel.boardFilenameForLink(board))
+      let psdPath = safeMediaPath(boardModel.boardFilenameForLink(board), { forWrite: true })
+      if (!psdPath) {
+        notifications.notify({ message: '[WARNING] Could not create the linked PSD because its path is invalid.' })
+        continue
+      }
 
       // fs.statSync checks if file exists without triggering a change that Photoshop would detect
       //
@@ -2815,40 +3024,22 @@ let openInEditor = async () => {
     for (board of selectedBoards) {
       let errmsg
 
-      let pathToLinkedFile = path.join(boardPath, 'images', board.link)
+      let pathToLinkedFile = safeMediaPath(board.link)
+      if (!pathToLinkedFile) {
+        errmsg = 'Could not open editor: the linked file path is outside this project'
+        notifications.notify({ message: `[WARNING] ${errmsg}` })
+        continue
+      }
       let pathToEditor = prefsModule.getPrefs()['absolutePathToImageEditor']
       if (pathToEditor) {
-        let binaryPath
-        let execString
-
-        // use .exe directly on win32
-        if (pathToEditor.match(/\.exe$/)) {
-          binaryPath = pathToEditor
-          execString = `"${binaryPath}" "${pathToLinkedFile}"`
-        // find binary in .app package on macOS
-        } else if (pathToEditor.match(/\.app$/)) {
-          binaryPath = pathToEditor
-          execString = `open -a "${binaryPath}" "${pathToLinkedFile}"`
-        } else {
-          binaryPath = pathToEditor
-          execString = `"${binaryPath}" "${pathToLinkedFile}"`
-        }
-
-        log.info('\tbinaryPath', binaryPath)
+        log.info('\tbinaryPath', pathToEditor)
         log.info('\tpathToLinkedFile', pathToLinkedFile)
-        log.info('\texecString', execString)
-
-        if (binaryPath) {
-          child_process.exec(execString, (error, stdout, stderr) => {
-            if (error) {
-              log.warn(error)
-              notifications.notify({ message: `[WARNING] ${error}` })
-              return
-            }
-            // log.info(`stdout: ${stdout}`)
-            // log.info(`stderr: ${stderr}`)
-          })
-        } else {
+        const result = await window.storyboarderMain.ipc.invoke('mainWindow:project', {
+          action: 'open-editor',
+          command: pathToEditor,
+          args: [pathToLinkedFile]
+        })
+        if (!result || result.ok !== true) {
           errmsg = 'Could not open editor'
         }
       } else {
@@ -2903,13 +3094,13 @@ const refreshLinkedBoardByFilename = async (filename, options = { forceReadFromF
   let isCurrentBoard = boardData.boards[currentBoard].uid === board.uid
 
   try {
-    log.info('\tloading', path.join(boardPath, 'images', board.link))
+    const linkedPath = safeMediaPath(board.link)
+    if (!linkedPath) throw new Error('Linked file is outside the project')
+    log.info('\tloading', linkedPath)
 
-    let buffer = fs.readFileSync(
-      path.join(boardPath, 'images', board.link)
-    )
+    let buffer = fs.readFileSync(linkedPath)
 
-    log.info('\treading', path.join(boardPath, 'images', board.link))
+    log.info('\treading', linkedPath)
     let canvas = importerPsd.fromPsdBufferComposite(buffer)
 
     let layer = storyboarderSketchPane.sketchPane.layers.findByName('reference')
@@ -2994,7 +3185,8 @@ const refreshLinkedBoardByFilename = async (filename, options = { forceReadFromF
       // explicitly indicate to renderer that the thumbnail file has changed
       // FIXME use mtime instead of etags?
       log.info('\tupdating etag')
-      setEtag(path.join(boardPath, 'images', boardModel.boardFilenameForThumbnail(board)))
+      const thumbnailPath = safeMediaPath(boardModel.boardFilenameForThumbnail(board))
+      if (thumbnailPath) setEtag(thumbnailPath)
       // save
       log.info('\tsaving thumbnail')
       let index = await saveThumbnailFile(boardData.boards.indexOf(board), { forceReadFromFiles: true })
@@ -3104,7 +3296,8 @@ const renderThumbnailToNewCanvas = (index, options = { forceReadFromFiles: false
 }
 
 const saveThumbnailFile = async (index, options = { forceReadFromFiles: false, blank: false }) => {
-  let imageFilePath = path.join(boardPath, 'images', boardModel.boardFilenameForThumbnail(boardData.boards[index]))
+  let imageFilePath = safeMediaPath(boardModel.boardFilenameForThumbnail(boardData.boards[index]), { forWrite: true })
+  if (!imageFilePath) throw new Error('Invalid thumbnail path')
 
   let canvas
 
@@ -3134,8 +3327,9 @@ const saveThumbnailFile = async (index, options = { forceReadFromFiles: false, b
 const updateThumbnailDisplayFromFile = index => {
   // load the thumbnail image file
   let board = boardData.boards[index]
-  let imageFilePath = path.join(boardPath, 'images', boardModel.boardFilenameForThumbnail(board))
-  let src = imageFilePath + '?' + getEtag(path.join(boardPath, 'images', boardModel.boardFilenameForThumbnail(board)))
+  let imageFilePath = safeMediaPath(boardModel.boardFilenameForThumbnail(board))
+  if (!imageFilePath) return
+  let src = mediaUrlForPath(imageFilePath)
 
   // does a thumbnail exist in the thumbnail drawer already?
   let el = document.querySelector(`[data-thumbnail="${index}"] img`)
@@ -3310,9 +3504,9 @@ let duplicateBoard = async () => {
 
     // absolute paths
     filePairs = filePairs.map(filePair => ({
-      from: path.join(boardPath, 'images', filePair.from),
-      to: path.join(boardPath, 'images', filePair.to)
-    }))
+      from: safeMediaPath(filePair.from),
+      to: safeMediaPath(filePair.to, { forWrite: true })
+    })).filter(filePair => filePair.from && filePair.to)
 
     for (let { from, to } of filePairs) {
       // log.info('duplicate', path.basename(from), 'to', path.basename(to))
@@ -3546,7 +3740,7 @@ let renderMarkerPosition = () => {
   let width = document.querySelector('#timeline #movie-timeline-content').offsetWidth
   document.querySelector('#timeline .marker').style.left = (width * percentage) + 'px'
 
-  document.querySelector('#timeline .left-block').innerHTML = util.msToTime(curr.time)
+  setSafeText('#timeline .left-block', util.msToTime(curr.time))
 
   let totalTime
   if (last.duration) {
@@ -3554,7 +3748,7 @@ let renderMarkerPosition = () => {
   } else {
     totalTime = (last.time + boardData.defaultBoardTiming)
   }
-  document.querySelector('#timeline .right-block').innerHTML = util.msToTime(totalTime)
+  setSafeText('#timeline .right-block', util.msToTime(totalTime))
 
   sceneTimelineView.update({
     currentBoardIndex: currentBoard
@@ -3562,8 +3756,9 @@ let renderMarkerPosition = () => {
 }
 
 const renderShotMetadata = () => {
-  document.querySelector('#board-metadata #shot').innerHTML = `${i18n.t('main-window.board-information.shot')}: ` + boardData.boards[currentBoard].shot
-  document.querySelector('#board-metadata #board-numbers').innerHTML = `${i18n.t('main-window.board-information.board')}: ` + boardData.boards[currentBoard].number + ` ${i18n.t("main-window.board-information.of")} ` + boardData.boards.length
+  if (!boardData || !Array.isArray(boardData.boards) || !boardData.boards[currentBoard]) return
+  setSafeText('#board-metadata #shot', `${i18n.t('main-window.board-information.shot')}: ` + boardData.boards[currentBoard].shot)
+  setSafeText('#board-metadata #board-numbers', `${i18n.t('main-window.board-information.board')}: ` + boardData.boards[currentBoard].number + ` ${i18n.t("main-window.board-information.of")} ` + boardData.boards.length)
 }
 
 let renderMetaData = () => {
@@ -3620,7 +3815,7 @@ let renderMetaData = () => {
     document.querySelector('textarea[name="dialogue"]').value = boardData.boards[currentBoard].dialogue
     let suggestionDuration = document.querySelector('#suggested-dialogue-duration')
     let duration = util.durationOfWords(boardData.boards[currentBoard].dialogue, 300)+300
-    suggestionDuration.innerHTML = "// about " + (duration/1000) + " seconds"
+    suggestionDuration.textContent = "// about " + (duration/1000) + " seconds"
     suggestionDuration.dataset.duration = duration
   }
   renderCaption()
@@ -3649,10 +3844,10 @@ let renderMetaData = () => {
 
 const renderCaption = () => {
   if (boardData.boards[currentBoard].dialogue) {
-    document.querySelector('#canvas-caption').innerHTML = boardData.boards[currentBoard].dialogue
+    document.querySelector('#canvas-caption').innerHTML = sanitizeMarkup(boardData.boards[currentBoard].dialogue)
     document.querySelector('#canvas-caption').style.display = 'block'
   } else {
-    document.querySelector('#suggested-dialogue-duration').innerHTML = ''
+    document.querySelector('#suggested-dialogue-duration').textContent = ''
     document.querySelector('#canvas-caption').style.display = 'none'
   }
 }
@@ -3660,9 +3855,9 @@ const renderCaption = () => {
 const renderMetaDataLineMileage = () => {
   let board = boardData.boards[currentBoard]
   if (board.lineMileage){
-    document.querySelector('#line-miles').innerHTML = (board.lineMileage/5280).toFixed(1) + ' line miles'
+    setSafeText('#line-miles', (board.lineMileage/5280).toFixed(1) + ' line miles')
   } else {
-    document.querySelector('#line-miles').innerHTML = '0 line miles'
+    setSafeText('#line-miles', '0 line miles')
   }
 }
 
@@ -3685,7 +3880,7 @@ const renderStats = () => {
     `${totalNewShots} ${util.pluralize(totalNewShots, 'shot').toUpperCase()}`
   )
 
-  document.querySelector('#left-stats .stats-primary').innerHTML = stats.join('<br />')
+  document.querySelector('#left-stats .stats-primary').innerHTML = stats.map(escapeHtml).join('<br />')
 
   if (
     (scriptData && viewMode == 5) ||
@@ -3758,7 +3953,8 @@ let previousScene = ()=> {
 const loadPosterFrame = async board => {
   let lastModified
   let filename = boardModel.boardFilenameForPosterFrame(board)
-  let imageFilePath = path.join(boardPath, 'images', filename)
+  let imageFilePath = safeMediaPath(filename)
+  if (!imageFilePath) return false
 
   if (!fs.existsSync(imageFilePath)) {
     log.info('loadPosterFrame failed')
@@ -3823,8 +4019,6 @@ let loaderIds = 0
 function * loadSketchPaneLayers (signal, board, indexToLoad) {
   const loaderId = ++loaderIds
 
-  const imagesPath = path.join(boardPath, 'images')
-
   // show the poster frame
   let hasPosterFrame = yield loadPosterFrame(board)
 
@@ -3850,8 +4044,8 @@ function * loadSketchPaneLayers (signal, board, indexToLoad) {
     // do we have data for a layer by this name?
     if (board.layers && board.layers[layer.name] && board.layers[layer.name].url) {
       let filename = board.layers[layer.name].url
-      let filepath = path.join(imagesPath, filename)
-      loadables.push({ index, filepath })
+      let filepath = safeMediaPath(filename)
+      if (filepath) loadables.push({ index, filepath })
     }
   }
 
@@ -3920,7 +4114,7 @@ const updateSketchPaneBoard = async () => {
   try {
     // configure onion skin
     onionSkin.setState({
-      pathToImages: path.join(boardPath, 'images'),
+      pathToImages: getImagesPath(),
       currBoard: boardData.boards[indexToLoad],
       prevBoard: boardData.boards[indexToLoad - 1],
       nextBoard: boardData.boards[indexToLoad + 1],
@@ -4025,12 +4219,13 @@ let renderThumbnailDrawer = () => {
     }
     let thumbnailWidth = Math.floor(60 * boardData.aspectRatio)
     html.push('" style="width: ' + thumbnailWidth + 'px;">')
-    let imageFilename = path.join(boardPath, 'images', board.url.replace('.png', '-thumbnail.png'))
+    const boardUrl = typeof board.url === 'string' ? board.url : ''
+    let imageFilename = safeMediaPath(boardUrl.replace('.png', '-thumbnail.png'))
     try {
-      if (fs.existsSync(imageFilename)) {
+      if (imageFilename && fs.existsSync(imageFilename)) {
         html.push('<div class="top">')
-        let src = imageFilename + '?' + getEtag(path.join(boardPath, 'images', boardModel.boardFilenameForThumbnail(board)))
-        html.push('<img src="' + src + '" height="60" width="' + thumbnailWidth + '">')
+        let src = mediaUrlForPath(imageFilename)
+        html.push('<img src="' + escapeHtml(src) + '" height="60" width="' + thumbnailWidth + '">')
         html.push('</div>')
       } else {
         // blank image
@@ -4040,8 +4235,8 @@ let renderThumbnailDrawer = () => {
       log.error(err)
     }
     html.push('<div class="info">')
-    html.push('<div class="number">' + board.shot + '</div>')
-    if (board.audio && board.audio.filename.length) {
+    html.push('<div class="number">' + escapeHtml(board.shot) + '</div>')
+    if (board.audio && typeof board.audio.filename === 'string' && board.audio.filename.length) {
       html.push(`
         <div class="audio">
           <svg>
@@ -4052,13 +4247,13 @@ let renderThumbnailDrawer = () => {
     }
     html.push('<div class="caption">')
     if (board.dialogue) {
-      html.push(board.dialogue)
+      html.push(sanitizeMarkup(board.dialogue))
     }
     html.push('</div><div class="duration">')
     if (board.duration) {
-      html.push(util.msToTime(board.duration))
+      html.push(escapeHtml(util.msToTime(board.duration)))
     } else {
-      html.push(util.msToTime(boardData.defaultBoardTiming))
+      html.push(escapeHtml(util.msToTime(boardData.defaultBoardTiming)))
     }
     html.push('</div>')
     html.push('</div>')
@@ -4281,7 +4476,7 @@ let renderScenes = () => {
   for (var node of scriptData ) {
     switch (node.type) {
       case 'section':
-        html.push('<div class="section node">' + node.text + '</div>')
+        html.push('<div class="section node">' + sanitizeMarkup(node.text) + '</div>')
         break
       case 'scene':
         if (node.scene_number !== 0) {
@@ -4290,12 +4485,12 @@ let renderScenes = () => {
           } else {
             html.push('<div class="scene node" data-node="' + (Number(node.scene_number)-1) + '" style="background:' + getSceneColor(node.slugline) + '">')
           }
-          html.push('<div class="number">SCENE ' + node.scene_number + ' - ' + util.msToTime(node.duration) + '</div>')
+          html.push('<div class="number">SCENE ' + escapeHtml(node.scene_number) + ' - ' + escapeHtml(util.msToTime(node.duration)) + '</div>')
           if (node.slugline) {
-            html.push('<div class="slugline">' + node.slugline + '</div>')
+            html.push('<div class="slugline">' + sanitizeMarkup(node.slugline) + '</div>')
           }
           if (node.synopsis) {
-            html.push('<div class="synopsis">' + node.synopsis + '</div>')
+            html.push('<div class="synopsis">' + sanitizeMarkup(node.synopsis) + '</div>')
           }
           // time, duration, page, word_count
           html.push('</div>')
@@ -4348,7 +4543,9 @@ let renderScenes = () => {
 
 let renderScript = () => {
   // HACK basic HTML strip, adds two spaces. could use 'striptags' lib instead?
-  const stripHtml = string => string.replace(/<[^>]+>/g, ' ')
+  const stripHtml = string => String(string == null ? '' : string).replace(/<[^>]+>/g, ' ')
+  const safePlain = string => escapeHtml(stripHtml(string))
+  const safeDuration = value => Number.isFinite(Number(value)) ? escapeHtml(Number(value)) : ''
 
   // log.info('renderScript currentScene:', currentScene)
   let sceneCount = 0
@@ -4356,26 +4553,28 @@ let renderScript = () => {
   for (var node of scriptData ) {
     if (node.type == 'scene') {
       if (node.scene_number == (currentScene+1)) {
-        let notes = node.slugline + '\n' + node.synopsis
-        html.push('<div class="item slugline" data-notes="' + notes + '" data-duration="' + node.duration + '"><div class="number" style="pointer-events: none">SCENE ' + node.scene_number + ' - ' +  util.msToTime(node.duration) + '</div>')
+        let notes = safePlain(node.slugline + '\n' + node.synopsis)
+        html.push('<div class="item slugline" data-notes="' + notes + '" data-duration="' + safeDuration(node.duration) + '"><div class="number" style="pointer-events: none">SCENE ' + safePlain(node.scene_number) + ' - ' + escapeHtml(util.msToTime(node.duration)) + '</div>')
 
-        html.push('<div style="pointer-events: none">' + node.slugline + '</div>')
+        html.push('<div style="pointer-events: none">' + sanitizeMarkup(node.slugline) + '</div>')
         if (node.synopsis) {
-          html.push('<div class="synopsis" style="pointer-events: none">' + node.synopsis + '</div>')
+          html.push('<div class="synopsis" style="pointer-events: none">' + sanitizeMarkup(node.synopsis) + '</div>')
         }
 
         html.push('</div>')
-        for (var item of node.script) {
-          let durationAsDataAttr = item.duration ? ` data-duration="${item.duration}"` : ''
+        for (var item of (Array.isArray(node.script)
+          ? node.script.filter(value => value && typeof value === 'object' && !Array.isArray(value))
+          : [])) {
+          let durationAsDataAttr = item.duration ? ` data-duration="${safeDuration(item.duration)}"` : ''
           switch (item.type) {
             case 'action':
-              html.push('<div class="item" data-action="' + stripHtml(item.text) + '"' + durationAsDataAttr + '>' + stripHtml(item.text) + '</div>')
+              html.push('<div class="item" data-action="' + safePlain(item.text) + '"' + durationAsDataAttr + '>' + safePlain(item.text) + '</div>')
               break
             case 'dialogue':
-              html.push('<div class="item" data-character="' + stripHtml(item.character) + '" data-dialogue="' + stripHtml(item.text) + '"' + durationAsDataAttr + '>' + stripHtml(item.character) + '<div class="dialogue" style="pointer-events: none">' + stripHtml(item.text) + '</div></div>')
+              html.push('<div class="item" data-character="' + safePlain(item.character) + '" data-dialogue="' + safePlain(item.text) + '"' + durationAsDataAttr + '>' + safePlain(item.character) + '<div class="dialogue" style="pointer-events: none">' + safePlain(item.text) + '</div></div>')
               break
             case 'transition':
-              html.push('<div class="item transition" data-notes="' + stripHtml(item.text) + '"' + durationAsDataAttr + '>' + stripHtml(item.text) + '</div>')
+              html.push('<div class="item transition" data-notes="' + safePlain(item.text) + '"' + durationAsDataAttr + '>' + safePlain(item.text) + '</div>')
               break
           }
         }
@@ -4451,7 +4650,11 @@ let getSceneColor = function (sceneString) {
       location.pop()
     }
     location = location.join(' - ')
-    return (locations.find(function (node) { return node[0] == location })[2])
+    const match = (locations || []).find(function (node) { return node[0] == location })
+    const color = match && match[2]
+    return typeof color === 'string' && /^(#(?:[0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})|rgba?\([0-9.,% ]+\)|hsla?\([0-9.,% ]+\))$/i.test(color)
+      ? color
+      : 'black'
   }
   return ('black')
 }
@@ -4519,9 +4722,16 @@ let loadScene = async (sceneNumber) => {
   currentBoard = 0
 
   let boardsDirectoryFolders = fs.readdirSync(currentPath)
-   .filter(
-     file => fs.statSync(path.join(currentPath, file)).isDirectory()
-   )
+    .filter(file => {
+      try {
+        const lexical = path.join(currentPath, file)
+        const stat = fs.lstatSync(lexical)
+        return stat.isDirectory() && !stat.isSymbolicLink() && Boolean(resolveInside(currentPath, file))
+      } catch (err) {
+        log.warn('Skipping unsafe scene directory', file)
+        return false
+      }
+    })
 
   let sceneCount = 0
 
@@ -4565,17 +4775,18 @@ let loadScene = async (sceneNumber) => {
           log.info(node)
           log.info("MAKE DIRECTORY")
 
-          let directoryName = 'Scene-' + node.scene_number + '-'
+          let directoryName = 'Scene-' + safeFilename(node.scene_number, '0') + '-'
           if (node.synopsis) {
-            directoryName += node.synopsis.substring(0, 50).replace(/\|&;\$%@"<>\(\)\+,/g, '').replace(/\./g, '').replace(/ - /g, ' ').replace(/ /g, '-').replace(/[|&;/:$%@"{}?|<>()+,]/g, '-')
+            directoryName += safeFilename(node.synopsis.substring(0, 50), 'scene')
           } else {
-            directoryName += node.slugline.substring(0, 50).replace(/\|&;\$%@"<>\(\)\+,/g, '').replace(/\./g, '').replace(/ - /g, ' ').replace(/ /g, '-').replace(/[|&;/:$%@"{}?|<>()+,]/g, '-')
+            directoryName += safeFilename(node.slugline && node.slugline.substring(0, 50), 'scene')
           }
-          directoryName += '-' + node.scene_id
+          directoryName += '-' + safeFilename(node.scene_id, `scene-${sceneCount}`)
 
           log.info(directoryName)
           // make directory
-          fs.mkdirSync(path.join(currentPath, directoryName))
+          const sceneRoot = resolveForWriteInside(currentPath, directoryName)
+          fs.mkdirSync(sceneRoot)
           // make storyboarder file
 
           let newBoardObject = {
@@ -4585,24 +4796,27 @@ let loadScene = async (sceneNumber) => {
             defaultBoardTiming: 2000,
             boards: []
           }
-          boardFilename = path.join(currentPath, directoryName, directoryName + '.storyboarder')
+          boardFilename = resolveForWriteInside(sceneRoot, directoryName + '.storyboarder')
           boardData = newBoardObject
           fs.writeFileSync(boardFilename, JSON.stringify(newBoardObject, null, 2))
           // make storyboards directory
-          fs.mkdirSync(path.join(currentPath, directoryName, 'images'))
+          fs.mkdirSync(resolveForWriteInside(sceneRoot, 'images'))
 
         } else {
           // load storyboarder file
           log.info('load storyboarder!')
           log.info(foundDirectoryName)
 
-          if (!fs.existsSync(path.join(currentPath, foundDirectoryName, 'images'))) {
-            fs.mkdirSync(path.join(currentPath, foundDirectoryName, 'images'))
+          const sceneRoot = resolveInside(currentPath, foundDirectoryName)
+          const imagesPath = path.join(sceneRoot, 'images')
+          if (!fs.existsSync(imagesPath)) {
+            fs.mkdirSync(resolveForWriteInside(sceneRoot, 'images'))
           }
 
 
-          boardFilename = path.join(currentPath, foundDirectoryName, foundDirectoryName + '.storyboarder')
-          boardData = JSON.parse(fs.readFileSync(boardFilename))
+          boardFilename = resolveInside(sceneRoot, foundDirectoryName + '.storyboarder')
+          boardData = JSON.parse(readFileUtf8Bounded(boardFilename, MAX_PROJECT_FILE_SIZE))
+          normalizeProjectMediaReferences()
         }
 
         // update UI to reflect current scene node
@@ -4620,9 +4834,7 @@ let loadScene = async (sceneNumber) => {
   }
 
   if (boardFilename) {
-    boardPath = boardFilename.split(path.sep)
-    boardPath.pop()
-    boardPath = boardPath.join(path.sep)
+    boardPath = path.dirname(boardFilename)
     log.info('BOARD PATH:', boardPath)
 
     dragTarget = document.querySelector('#thumbnail-container')
@@ -5394,7 +5606,8 @@ let copyBoards = async () => {
       let layerData = {}
 
       for (let name of Object.keys(board.layers)) {
-        let filepath = path.join(boardPath, 'images', board.layers[name].url)
+        let filepath = safeMediaPath(board.layers[name].url)
+        if (!filepath) continue
 
         let img = await exporterCommon.getImage(filepath + '?' + cacheKey(filepath))
         if (img) {
@@ -5679,10 +5892,10 @@ let pasteBoards = async () => {
         if (src.link) {
           // TODO is link being migrated properly?
           // see: https://github.com/wonderunit/storyboarder/issues/1165
-          let from  = path.join(boardPath, 'images', src.link)
-          let to    = path.join(boardPath, 'images', boardModel.boardFilenameForLink(dst))
+          let from  = safeMediaPath(src.link)
+          let to    = safeMediaPath(boardModel.boardFilenameForLink(dst), { forWrite: true })
 
-          if (fs.existsSync(from)) {
+          if (from && to && fs.existsSync(from)) {
             log.info('copying linked PSD', from, 'to', to)
             fs.writeFileSync(to, fs.readFileSync(from))
           } else {
@@ -6381,56 +6594,23 @@ const saveAsFolder = async () => {
 }
 
 const exportWeb = async () => {
-  if (!prefsModule.getPrefs().auth) {
+  if (!(await window.storyboarderMain.auth.isAuthenticated())) {
     showSignInWindow()
   } else {
     await startWebUpload()
   }
 }
 const showSignInWindow = () => {
-  if (exportWebWindow) {
-    exportWebWindow.destroy()
-  }
-
   textInputMode = true
   textInputAllowAdvance = false
-
-  exportWebWindow = new remote.BrowserWindow({
-    width: 1200,
-    height: 800,
-    minWidth: 600,
-    minHeight: 600,
-    backgroundColor: '#333333',
-    show: false,
-    center: true,
-    parent: remote.getCurrentWindow(),
-    resizable: true,
-    frame: false,
-    modal: true,
-    webPreferences: {
-      webgl: true,
-      experimentalFeatures: true,
-      experimentalCanvasFeatures: true,
-      devTools: true,
-      plugins: true,
-      nodeIntegration: true,
-      contextIsolation: false
-    }
-  })
-  remoteMain.enable(exportWebWindow.webContents)
-  exportWebWindow.loadURL(`file://${__dirname}/../../upload.html`)
-  exportWebWindow.once('ready-to-show', () => {
-    exportWebWindow.show()
-  })
-  exportWebWindow.on('hide', () => {
-    ipcRenderer.send('textInputMode', false)
-  })
+  window.storyboarderMain.ipc.invoke('mainWindow:project', { action: 'open-upload' })
+    .catch(error => {
+      textInputMode = false
+      notifications.notify({ message: `Could not open the sign-in window: ${error.message}` })
+    })
 }
-ipcRenderer.on('signInSuccess', (event, response) => {
+ipcRenderer.on('signInSuccess', () => {
   notifications.notify({ message: 'Success! You’re Signed In!' })
-
-  prefsModule.set('auth', { token: response.token })
-
   exportWeb()
 })
 const startWebUpload = async () => {
@@ -6446,12 +6626,17 @@ const startWebUpload = async () => {
   try {
     let result = await exporterWeb.uploadToWeb(boardFilename)
     notifications.notify({ message: 'Upload complete!' })
-    log.info('Uploaded to', result.link)
-    remote.shell.openExternal(result.link)
+    const link = result && result.link
+    log.info('Uploaded to', typeof link === 'string' ? '[link redacted]' : '[invalid link]')
+    if (isSafeExternalUrl(link, ['storyboarders.com', 'www.storyboarders.com'])) {
+      remote.shell.openExternal(link)
+    } else {
+      notifications.notify({ message: 'Upload completed, but the returned link was rejected as unsafe.' })
+    }
   } catch (err) {
-    if (err.name === 'StatusCodeError' && err.statusCode === 403) {
+    if (err.name === 'StatusCodeError' && (err.statusCode === 401 || err.statusCode === 403)) {
       notifications.notify({ message: 'Oops! Your credentials are invalid or have expired. Please try signing in again to upload.' })
-      prefsModule.set('auth', undefined)
+      window.storyboarderMain.auth.clear()
       showSignInWindow()
     } else {
       log.error(err)
@@ -6497,9 +6682,9 @@ const exportZIP = async () => {
 }
 
 const reloadScript = async (args) => { // [scriptData, locations, characters]
-  scriptData = args[0]
-  locations = args[1]
-  characters = args[2]
+  scriptData = normalizeScriptData(args[0])
+  locations = normalizeStringRows(args[1])
+  characters = normalizeStringRows(args[2])
 
   await updateSceneFromScript()
 
@@ -6746,6 +6931,16 @@ ipcRenderer.on('exportVideo', (event, args) => {
 
 ipcRenderer.on('exportPrintableWorksheetPdf', (event, sourcePath) => {
   let filename = 'Worksheet'
+  let safeSourcePath
+  try {
+    if (typeof sourcePath !== 'string' || path.basename(sourcePath) !== 'worksheetoutput.pdf') {
+      throw new Error('Invalid worksheet source')
+    }
+    safeSourcePath = resolveInside(app.getPath('temp'), 'worksheetoutput.pdf')
+  } catch (err) {
+    notifications.notify({ message: 'Could not export Worksheet PDF: invalid source file.', timing: 20 })
+    return
+  }
 
   let outputPath = path.join(
     exporterCommon.ensureExportsPathExists(boardFilename),
@@ -6753,7 +6948,7 @@ ipcRenderer.on('exportPrintableWorksheetPdf', (event, sourcePath) => {
   )
 
   if (!fs.existsSync(outputPath)) {
-    fs.writeFileSync(outputPath, fs.readFileSync(sourcePath))
+    fs.writeFileSync(outputPath, fs.readFileSync(safeSourcePath))
 
     notifications.notify({message: "A Worksheet PDF has been exported.", timing: 20})
     sfx.positive()
@@ -6870,6 +7065,7 @@ if (isDev) {
     if (!boardData) {
       // were we passed a filename in the `npm start` arguments?
       let filePath = process.env.npm_package_scripts_start
+      if (typeof filePath !== 'string') return
       filePath = filePath.replace(/"/g, '')
       filePath = filePath.replace('electron .', '')
       filePath = filePath.replace(/^\s/, '')

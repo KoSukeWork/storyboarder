@@ -1,3 +1,5 @@
+const { ipcRenderer } = require('electron')
+
 class AudioFileControlView {
   constructor ({ onRequestFile, onSelectFile, onSelectFileCancel, onClear, onStartRecord, onStopRecord, onAudioComplete, onCounterTick, onNotify }) {
     this.state = {
@@ -63,6 +65,10 @@ class AudioFileControlView {
   prepareToRecord () {
     return new Promise((resolve, reject) => {
       this.recorder = new Recorder()
+
+      // Request microphone permission only as part of the user-initiated
+      // record flow.  The main process grants it for a short window.
+      ipcRenderer.send('audio:request-permission')
 
       this.setState({ mode: 'initializing' })
 
@@ -216,7 +222,7 @@ class AudioFileControlView {
 
       if (this.state.mode === 'countdown') {
         // countdown
-        recordButton.querySelector('.record_icon span').innerHTML = this.state.counter
+        recordButton.querySelector('.record_icon span').textContent = String(this.state.counter == null ? '' : this.state.counter)
       }
 
       if (this.state.mode === 'recording') {
@@ -299,11 +305,9 @@ class AudioFileControlView {
       audiofileInputEl.value = boardAudio.filename
 
       // audiofileTextEl.innerHTML = util.truncateMiddle(boardAudio.filename)
-      audiofileTextEl.innerHTML = '<span>' +
-                                    // '<span class="paren">(</span>' +
-                                    `Audio: ${boardAudio.duration}ms` + // : 3s 44.1khz 16bit
-                                    // '<span class="paren">)</span>' +
-                                  '</span>'
+      const audioDuration = document.createElement('span')
+      audioDuration.textContent = `Audio: ${boardAudio.duration == null ? '' : boardAudio.duration}ms`
+      audiofileTextEl.replaceChildren(audioDuration)
 
       audiofileSvgUseEl.setAttribute('xlink:href',
         audiofileSvgUseEl.getAttribute('xlink:href')
@@ -314,11 +318,10 @@ class AudioFileControlView {
     } else {
       // mute
       audiofileInputEl.value = ''
-      audiofileTextEl.innerHTML = '<span class="muted">' +
-                                    // '<span class="paren">(</span>' +
-                                    'Select Audio File' +
-                                    // '<span class="paren">)</span>' +
-                                  '</span>'
+      const audioPlaceholder = document.createElement('span')
+      audioPlaceholder.className = 'muted'
+      audioPlaceholder.textContent = 'Select Audio File'
+      audiofileTextEl.replaceChildren(audioPlaceholder)
       audiofileSvgUseEl.setAttribute('xlink:href',
         audiofileSvgUseEl.getAttribute('xlink:href')
           .split('#')[0] + '#icon-speaker-off')

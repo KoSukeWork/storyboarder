@@ -2,6 +2,7 @@
 <html>
   <head>
     <meta charset="utf-8">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://checkout.stripe.com; connect-src 'self' https://app.wonderunit.com; frame-src https://checkout.stripe.com https://js.stripe.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://*.stripe.com; object-src 'none'; base-uri 'none'; frame-ancestors 'none';">
     <link rel="stylesheet" href="./css/fonts.css">
     <link rel="stylesheet" href="./css/registration.css">
     <title>Registration</title>
@@ -86,6 +87,6 @@
       </div>
     </template>
 
-    <script src="./js/windows/registration/window.js"></script>
+    <script src="./js/windows/registration/secure-window.js"></script>
   </body>
 </html>

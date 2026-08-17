@@ -2,16 +2,18 @@ const archiver = require('archiver')
 const fs = require('fs-extra')
 const dayjs = require('dayjs')
 const path = require('path')
-const remote = require('@electron/remote')
-const fetch = require('node-fetch')
-const FormData = require('form-data')
+const {
+  MAX_PROJECT_FILE_SIZE,
+  assertReadableFile,
+  readFileUtf8Bounded,
+  resolveInside,
+  resolveForWriteInside
+} = require('../utils/security')
 
 const boardModel = require('../models/board')
 const exporterCommon = require('./common')
 const exporterFfmpeg = require('./ffmpeg')
 const { fitToDst } = require('../utils')
-
-const prefsModule = remote.require(path.join(__dirname, '..', 'prefs'))
 
 // const API_URI = 'http://localhost:8080/api'
 const API_URI = 'https://storyboarders.com/api'
@@ -19,8 +21,12 @@ const API_URI = 'https://storyboarders.com/api'
 const exportForWeb = async (srcFilePath, outputFolderPath) => {
   console.log('exportForWeb')
   try {
+    srcFilePath = assertReadableFile(srcFilePath, MAX_PROJECT_FILE_SIZE)
     // read the scene
-    let scene = JSON.parse(fs.readFileSync(srcFilePath))
+    let scene = JSON.parse(readFileUtf8Bounded(srcFilePath, MAX_PROJECT_FILE_SIZE))
+    if (!scene || !Array.isArray(scene.boards) || scene.boards.length > 100000) {
+      throw new Error('Invalid or oversized storyboard data')
+    }
 
     fs.ensureDirSync(outputFolderPath)
 
@@ -76,11 +82,11 @@ const exportForWeb = async (srcFilePath, outputFolderPath) => {
 
     let audioWriters = []
     for (let board of scene.boards) {
-      if (board.audio) {
+      if (board.audio && typeof board.audio.filename === 'string' && board.audio.filename.length) {
         audioWriters.push(new Promise(async resolve => {
           try {
-            let src = path.join(path.dirname(srcFilePath), 'images', board.audio.filename)
-            let dst = path.join(outputFolderPath, path.basename(board.audio.filename, '.wav') + '.mp4')
+            let src = resolveInside(path.join(path.dirname(srcFilePath), 'images'), board.audio.filename)
+            let dst = resolveForWriteInside(outputFolderPath, path.basename(board.audio.filename, '.wav') + '.mp4')
 
             let args = [
               // Input #0
@@ -147,7 +153,7 @@ const exportForWeb = async (srcFilePath, outputFolderPath) => {
 
       // TODO layers? remove?
 
-      if (board.audio) {
+      if (board.audio && typeof board.audio.filename === 'string' && board.audio.filename.length) {
         board.audio.filename = path.basename(
           board.audio.filename,
           '.wav'
@@ -162,7 +168,7 @@ const exportForWeb = async (srcFilePath, outputFolderPath) => {
     //
     // FIXME should grab from flattened PNG instead of JPG
     //
-    let dst = path.join(outputFolderPath, 'thumbnailanim.jpg')
+    let dst = resolveForWriteInside(outputFolderPath, 'thumbnailanim.jpg')
     let args = []
     let filterArgs = []
     let n = 0
@@ -172,7 +178,7 @@ const exportForWeb = async (srcFilePath, outputFolderPath) => {
       spritableBoards = spritableBoards.slice(0, 10)
     }
     for (let board of spritableBoards) {
-      let jpgPath = path.join(
+      let jpgPath = resolveInside(
         outputFolderPath,
         path.basename(board.url) // NOTE modified, will grab from JPG
       )
@@ -219,7 +225,7 @@ const exportForWeb = async (srcFilePath, outputFolderPath) => {
     //
     //
     // write the modified scene
-    fs.writeFileSync(path.join(outputFolderPath, 'main.storyboarder'), JSON.stringify(scene, null, 2))
+    fs.writeFileSync(resolveForWriteInside(outputFolderPath, 'main.storyboarder'), JSON.stringify(scene, null, 2))
   } finally {
     console.log('Done!')
   }
@@ -230,8 +236,10 @@ const uploadToWeb = async sceneFilePath => {
 
   let basename = path.basename(sceneFilePath, path.extname(sceneFilePath))
   let timestamp = dayjs().format('YYYY-MM-DD hh.mm.ss')
-  let outputFolderPath = path.join(sceneDirPath, 'exports', `${basename}-web-${timestamp}`)
-  let zipFilePath = path.join(path.dirname(outputFolderPath), `${path.basename(outputFolderPath)}.zip`)
+  const exportsRoot = resolveForWriteInside(sceneDirPath, 'exports')
+  fs.ensureDirSync(exportsRoot)
+  let outputFolderPath = resolveForWriteInside(exportsRoot, `${basename}-web-${timestamp}`)
+  let zipFilePath = resolveForWriteInside(exportsRoot, `${path.basename(outputFolderPath)}.zip`)
 
   try {
     await exportForWeb(sceneFilePath, outputFolderPath)
@@ -273,43 +281,25 @@ const uploadToWeb = async sceneFilePath => {
 
     // remote.shell.showItemInFolder(outputFolderPath)
 
-    let url = `${API_URI}/upload`
-
-    let scene = JSON.parse(fs.readFileSync(sceneFilePath))
-
-    let form = new FormData()
-    form.append('title', path.basename(sceneFilePath, path.extname(sceneFilePath)))
-      // description: TODO populate from form
-
-      // TODO use audio duration
-    form.append('duration', scene.boards[scene.boards.length - 1].time +
-                boardModel.boardDuration(scene, scene.boards[scene.boards.length - 1]))
-    form.append('boards', scene.boards.length)
-    form.append('width', Math.round(scene.aspectRatio * 720))
-    form.append('height', 720)
-    form.append('zip', fs.createReadStream(zipFilePath))
-
-    let token = prefsModule.getPrefs().auth.token
-
-    let res = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        ...form.getHeaders()
-      },
-      body: form
+    // The zip is prepared in the renderer because board flattening requires a
+    // browser canvas.  Network access and the bearer token stay in the main
+    // process; this IPC call deliberately returns only the server result.
+    if (!window.storyboarderMain || !window.storyboarderMain.ipc) {
+      throw new Error('Secure upload bridge is unavailable')
+    }
+    const result = await window.storyboarderMain.ipc.invoke('mainWindow:upload-web', {
+      sceneFilePath,
+      zipFilePath
     })
-
-    let json = await res.json()
-
-    console.log('Upload OK')
-    console.log('message:', json.message, 'id:', json.id)
-
-    prefsModule.set('auth', {
-      token: json.renewedToken
-    })
-
-    return json
+    if (!result || result.ok !== true) {
+      const error = new Error(result && result.error ? result.error : 'Upload failed')
+      if (result && Number.isInteger(result.statusCode)) {
+        error.name = 'StatusCodeError'
+        error.statusCode = result.statusCode
+      }
+      throw error
+    }
+    return result.data
   } catch (err) {
     console.error(err)
     throw err

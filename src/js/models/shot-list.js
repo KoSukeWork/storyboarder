@@ -1,5 +1,11 @@
-const fs = require('fs')
 const path = require('path')
+const {
+  MAX_PROJECT_FILE_SIZE,
+  assertReadableFile,
+  assertSafeRelativePath,
+  readFileUtf8Bounded,
+  resolveInside
+} = require('../utils/security')
 const { PerspectiveCamera } = require('three')
 
 const fountain = require('../vendor/fountain')
@@ -12,7 +18,27 @@ const getFovAsFocalLength = (fov, aspect) => new PerspectiveCamera(fov, aspect).
 
 const comparable = (a, b, tolerance) => Math.abs(a - b) < tolerance
 
+const validateScene = scene => {
+  if (!scene || typeof scene !== 'object' || !Array.isArray(scene.boards)) {
+    throw new Error('Invalid storyboard scene data')
+  }
+  if (scene.boards.length > 100000) throw new Error('Storyboard contains too many boards')
+  for (const board of scene.boards) {
+    if (!board || typeof board !== 'object' || Array.isArray(board)) {
+      throw new Error('Invalid storyboard board data')
+    }
+    if (board.sg) {
+      const objects = board.sg.data && board.sg.data.sceneObjects
+      if (!objects || typeof objects !== 'object' || Array.isArray(objects) || Object.keys(objects).length > 100000) {
+        throw new Error('Invalid Shot Generator scene data')
+      }
+    }
+  }
+  return scene
+}
+
 const getCameraSetups = (scene, tolerances = { rotation: degToRad(60), position: 6 }) => {
+  validateScene(scene)
   let setups = []
   for (let board of scene.boards) {
     if (!board.sg) continue
@@ -185,8 +211,9 @@ const getSceneFolderName = node => {
 }
 
 const getShotListForProject = scriptFilePath => {
+  scriptFilePath = assertReadableFile(scriptFilePath, MAX_PROJECT_FILE_SIZE)
   const projectPath = path.dirname(scriptFilePath)
-  const data = fs.readFileSync(scriptFilePath, 'utf-8')
+  const data = readFileUtf8Bounded(scriptFilePath, MAX_PROJECT_FILE_SIZE)
 
   let parsedData = fountain.parse(data, true)
 
@@ -199,6 +226,7 @@ const getShotListForProject = scriptFilePath => {
     .filter(node => node.type === 'scene')
     .map(node => {
       let name = getSceneFolderName(node)
+      assertSafeRelativePath(name)
 
       return {
         name,
@@ -206,10 +234,14 @@ const getShotListForProject = scriptFilePath => {
         node
       }
     })
+  if (folders.length > 10000) throw new Error('Script contains too many scenes')
 
   return {
     scenes: folders.map(folder => {
-      let scene = JSON.parse(fs.readFileSync(path.join(projectPath, folder.storyboarderFilePath)))
+      const storyboardsRoot = resolveInside(projectPath, 'storyboards')
+      const sceneRoot = resolveInside(storyboardsRoot, folder.name)
+      const storyboarderPath = resolveInside(sceneRoot, `${folder.name}.storyboarder`)
+      let scene = validateScene(JSON.parse(readFileUtf8Bounded(storyboarderPath, MAX_PROJECT_FILE_SIZE)))
 
       let number = folder.node.scene_number
       let id = folder.node.scene_id

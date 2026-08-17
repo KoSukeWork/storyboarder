@@ -97,7 +97,7 @@ function parseScenes(tokens) {
 }
 
 function getCharacters(tokens) {
-  let characters = {}
+  let characters = Object.create(null)
   let character
   for (var token of tokens) {
     if (token.type == 'character') {
@@ -113,7 +113,7 @@ function getCharacters(tokens) {
 }
 
 function getLocations(tokens) {
-  let locations = {}
+  let locations = Object.create(null)
   let location
   for (var token of tokens) {
     if (token.type == 'scene_heading') {

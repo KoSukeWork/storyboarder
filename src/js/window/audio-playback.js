@@ -29,7 +29,7 @@ class AudioPlayback {
 
   getAudioBufferByFilename (filename) {
     // console.log("getAudioBufferByFilename is BEING CALLED A LOT!")
-    if (this.players._players) {
+    if (this.players._players && this.players._players[filename]) {
       return this.players._players[filename].buffer
     }
   }
@@ -109,7 +109,7 @@ class AudioPlayback {
       Tone.Buffer.on('error', onError)
 
       for (let board of this.sceneData.boards) {
-        if (!board.audio) continue
+        if (!board.audio || typeof board.audio.filename !== 'string' || !board.audio.filename) continue
 
         if (!this.players.has(board.audio.filename)) {
           loadables.push(board.audio.filename)
@@ -119,7 +119,10 @@ class AudioPlayback {
       // remove any players for files no longer referenced in scene boards
       //
       // for every loaded audio file ...
-      let sceneAudioFilenames = this.sceneData.boards.map(b => b.audio).map(a => a && a.filename).filter(a => !!a)
+      let sceneAudioFilenames = this.sceneData.boards
+        .map(b => b.audio)
+        .map(a => a && typeof a.filename === 'string' ? a.filename : null)
+        .filter(a => !!a)
       for (let filename of Object.keys(this.players._players)) {
         // ... check to see if it's not referenced in the scene
         if (!sceneAudioFilenames.includes(filename)) {
@@ -136,8 +139,15 @@ class AudioPlayback {
         resolve({ failed })
       } else {
         for (let filepath of loadables) {
-          this.players.add(filepath, this.getAudioFilePath(filepath), onLoad)
+          const source = this.getAudioFilePath(filepath)
+          if (!source) {
+            failed.push(filepath)
+            remaining--
+            continue
+          }
+          this.players.add(filepath, source, onLoad)
         }
+        checkDone()
       }
     })
   }
@@ -167,8 +177,9 @@ class AudioPlayback {
     for (let i = 0; i < this.sceneData.boards.length; i++) {
       let board = this.sceneData.boards[i]
 
-      if (board.audio) {
+      if (board.audio && typeof board.audio.filename === 'string' && board.audio.filename) {
         let player = this.players.get(board.audio.filename)
+        if (!player) continue
 
         if (!player.buffer.loaded) {
           console.error('audio not yet loaded', board.audio.filename)

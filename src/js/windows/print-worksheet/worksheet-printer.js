@@ -6,7 +6,8 @@ const qr = require('qr-image')
 const dayjs = require('dayjs')
 const advancedFormat = require('dayjs/plugin/advancedFormat')
 dayjs.extend(advancedFormat)
-const app = require('@electron/remote').app
+const { app } = require('electron')
+const { resolveForWriteInside } = require('../../utils/security')
 
 const util = require('../../utils/index')
 const getIpAddress = require('../../utils/getIpAddress')
@@ -52,7 +53,10 @@ class WorksheetPrinter extends EventEmitter {
     doc.registerFont('regular', path.join(__dirname, '..', '..', '..', 'fonts', 'thicccboi', 'THICCCBOI-Regular.ttf'))
     doc.registerFont('bold', path.join(__dirname, '..', '..', '..', 'fonts', 'thicccboi', 'THICCCBOI-Bold.ttf'))
 
-    let stream = doc.pipe(fs.createWriteStream(path.join(app.getPath('temp'), 'worksheetoutput.pdf')))
+    const tempPath = app.getPath('temp')
+    const worksheetPath = resolveForWriteInside(tempPath, 'worksheetoutput.pdf')
+    const qrCodePath = resolveForWriteInside(tempPath, 'qrcode.png')
+    let stream = doc.pipe(fs.createWriteStream(worksheetPath))
 
     // calc qr code
     let codeData = []
@@ -65,7 +69,7 @@ class WorksheetPrinter extends EventEmitter {
     codeData.push(String(Math.round(Date.now()/1000)).substr(6))
     let qrText = codeData.join('-')
     let img = qr.imageSync(qrText, {ec_level: 'H', type: 'png', size: 15, margin: 0})
-    fs.writeFileSync(path.join(app.getPath('temp'), 'qrcode.png'), img)
+    fs.writeFileSync(qrCodePath, img)
 
     // draw header
     let x, y
@@ -75,7 +79,7 @@ class WorksheetPrinter extends EventEmitter {
     x = documentSize[1]-margin[2]-qrSize
     y = margin[1]
 
-    doc.image(path.join(app.getPath('temp'), 'qrcode.png'), x, y, {width: qrSize, height: qrSize})
+    doc.image(qrCodePath, x, y, {width: qrSize, height: qrSize})
     doc.save()
     doc.rotate(-90, {origin: [x, y]})
     doc.font('thin')
@@ -236,7 +240,7 @@ class WorksheetPrinter extends EventEmitter {
 
     let that = this
     stream.on('close', function() {
-      that.emit('generated', path.join(app.getPath('temp'), 'worksheetoutput.pdf'))
+      that.emit('generated', worksheetPath)
     })
   }
 

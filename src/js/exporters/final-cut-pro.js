@@ -1,5 +1,6 @@
 // https://developer.apple.com/library/content/documentation/AppleApplications/Reference/FinalCutPro_XML
 const path = require('path')
+const { resolveInside } = require('../utils/security')
 
 const Tone = require('tone')
 
@@ -318,14 +319,14 @@ const generateFinalCutProData = async (boardData, { projectFileAbsolutePath, out
     clipItems.push(clipItem)
 
     if (board.audio && board.audio.filename && board.audio.filename.length) {
-      let filepath = path.join(dirname, 'images', board.audio.filename)
       let buffer
 
       try {
+        let filepath = resolveInside(path.join(dirname, 'images'), board.audio.filename)
         buffer = await new Tone.Buffer().load(filepath)
       } catch (err) {
-        console.error(err)
-        throw new Error(`could not load audio file ${board.audio.filename}`)
+        console.warn(`Skipping invalid or unreadable project audio path: ${board.audio.filename}`)
+        continue
       }
 
       // buffer.length               // length in samples, e.g. 44788

@@ -2,6 +2,7 @@
 <html>
   <head>
     <meta charset="UTF-8">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'">
     <link rel="stylesheet" href="./css/fonts.css">
     <link rel="stylesheet" href="./css/welcome.css">
     <title>New</title>
@@ -164,7 +165,5 @@
 
     </div>
   </body>
-  <script>
-    require('./js/window/new-window')
-  </script>
+  <script src="./js/window/new-window.js"></script>
 </html>

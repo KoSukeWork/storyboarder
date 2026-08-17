@@ -1,4 +1,4 @@
-const remote = require('@electron/remote')
+const remote = require('../utils/renderer-runtime')
 const EventEmitter = require('events').EventEmitter
 const Color = require('color-js')
 
@@ -386,7 +386,7 @@ class Toolbar extends EventEmitter {
     let elRunning = document.querySelector('#toolbar-pomodoro-running')
     elRunning.style.display = 'flex'
     let elRunningStatus = document.querySelector('#toolbar-pomodoro-running-status')
-    elRunningStatus.innerHTML = data.remainingFriendly
+    elRunningStatus.textContent = data.remainingFriendly == null ? '' : String(data.remainingFriendly)
   }
 
   updatePomodoroTimer (data = { remaining: 0 }) {
@@ -395,7 +395,7 @@ class Toolbar extends EventEmitter {
     let elRunningStatus = document.querySelector('#toolbar-pomodoro-running-status')
     switch (data.state) {
       case 'running':
-        elRunningStatus.innerHTML = data.remainingFriendly
+        elRunningStatus.textContent = data.remainingFriendly == null ? '' : String(data.remainingFriendly)
         break
       case 'completed':
         elRest.style.display = 'flex'
@@ -443,7 +443,7 @@ class DraggableText {
       this.setValue((event.clientX - this.anchorX) / document.body.offsetWidth, this.anchorValue)
     }
     render () {
-      this.el.innerHTML = this.formatValueForDisplay(this.getValue())
+      this.el.textContent = this.formatValueForDisplay(this.getValue())
     }
 }
 

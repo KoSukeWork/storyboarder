@@ -1,6 +1,7 @@
 const execa = require('execa')
 const fs = require('fs-extra')
 const path = require('path')
+const { resolveInside, resolveForWriteInside } = require('../utils/security')
 const dayjs = require('dayjs')
 const tmp = require('tmp')
 const os = require('os')
@@ -9,13 +10,10 @@ const reportedFfmpegPath = require('ffmpeg-static')
 
 // via https://github.com/sindresorhus/electron-util/blob/main/source/is-using-asar.js
 const isUsingAsar = () => {
-  if (!('electron' in process.versions)) return
-
-  let mainModule = process.type == 'renderer'
-    ? require('@electron/remote').process.mainModule
-    : require.main
-
-  return mainModule && mainModule.filename.includes('app.asar')
+  // ffmpeg-static points into app.asar in packaged builds.  The binary is
+  // unpacked by electron-builder, so no renderer access to remote.process is
+  // needed to determine the executable path.
+  return typeof reportedFfmpegPath === 'string' && reportedFfmpegPath.includes('app.asar')
 }
 
 let ffmpegPath = reportedFfmpegPath
@@ -25,6 +23,7 @@ if (isUsingAsar()) {
 
 const boardModel = require('../models/board')
 const exporterCommon = require('../exporters/common')
+const { safeFilename } = require('../utils/security')
 
 // const durationRegex = /Duration: (\d\d:\d\d:\d\d.\d\d)/gm
 // const frameRegex = /frame=\s+(\d+)/gm
@@ -123,10 +122,10 @@ const convertToVideo = async opts => {
 
     // export flattened boards to output path
     console.log('exporting images and audio for output …')
-    let writers = scene.boards.map(async board =>
+    let writers = scene.boards.map(async (board, index) =>
       exporterCommon.exportFlattenedBoard(
         board,
-        board.url,
+        safeFilename(board.url, `board-${index + 1}.png`),
         boardModel.boardFileImageSize(scene),
         sceneFilePath,
         tmpDir.name
@@ -146,8 +145,15 @@ const convertToVideo = async opts => {
     let audioStreamIndex = 0
     for (let board of scene.boards) {
       if (board.audio) {
+        let audioPath
+        try {
+          audioPath = resolveInside(path.join(path.dirname(sceneFilePath), 'images'), board.audio.filename)
+        } catch (err) {
+          console.warn(`Skipping invalid project audio path: ${board.audio.filename}`)
+          continue
+        }
         audioFileArgs = audioFileArgs.concat([
-          '-i', path.join(path.dirname(sceneFilePath), 'images', board.audio.filename)
+          '-i', audioPath
         ])
 
         // lol via https://video.stackexchange.com/a/22115
@@ -155,8 +161,11 @@ const convertToVideo = async opts => {
         // related: audio-playback.js FADE_OUT_IN_SECONDS
         let fadeout = `areverse, afade=d=${FADE_OUT_IN_SECONDS}:curve=exp, areverse`
 
-        let filter = board.time > 0
-          ? `${fadeout},adelay=${board.time}|${board.time}`
+        const boardTime = Number.isFinite(Number(board.time))
+          ? Math.max(0, Math.min(24 * 60 * 60 * 1000, Number(board.time)))
+          : 0
+        let filter = boardTime > 0
+          ? `${fadeout},adelay=${boardTime}|${boardTime}`
           : `${fadeout}`
 
         // stream index
@@ -183,23 +192,28 @@ const convertToVideo = async opts => {
     // add last board twice because ffmpeg ¯\_(ツ)_/¯
     let boardsWithLastBoardTwice = scene.boards.concat(scene.boards[scene.boards.length - 1])
     let videoConcats = ['ffconcat version 1.0']
-    for (let board of boardsWithLastBoardTwice) {
-      let durationInSeconds = boardModel.boardDuration(scene, board) / 1000
+    for (let [index, board] of boardsWithLastBoardTwice.entries()) {
+      const duration = Number(boardModel.boardDuration(scene, board))
+      let durationInSeconds = Number.isFinite(duration)
+        ? Math.max(0.001, Math.min(24 * 60 * 60, duration / 1000))
+        : 2
+      let filename = safeFilename(board.url, `board-${(index % scene.boards.length) + 1}.png`)
       videoConcats.push('')
       // via https://superuser.com/questions/718027/ffmpeg-concat-doesnt-work-with-absolute-path
       // > use forward slashes, not backslashes, even in Windows
-      videoConcats.push(`file ${slash(path.resolve(path.join(tmpDir.name, board.url)))}`)
+      videoConcats.push(`file ${slash(resolveInside(tmpDir.name, filename))}`)
       videoConcats.push(`duration ${durationInSeconds}`)
     }
 
     console.log('\n')
     console.log('writing video.ffconcat')
     console.log(videoConcats.join('\n'))
-    fs.writeFileSync(path.join(tmpDir.name, 'video.ffconcat'), videoConcats.join('\n'))
+    const concatFilePath = resolveForWriteInside(tmpDir.name, 'video.ffconcat')
+    fs.writeFileSync(concatFilePath, videoConcats.join('\n'))
     console.log('\n')
 
     console.log('\n')
-    outputFilePath = path.join(outputPath, `${path.basename(sceneFilePath, path.extname(sceneFilePath))} Exported ${dayjs().format('YYYY-MM-DD hh.mm.ss')}.mp4`)
+    outputFilePath = resolveForWriteInside(outputPath, `${path.basename(sceneFilePath, path.extname(sceneFilePath))} Exported ${dayjs().format('YYYY-MM-DD hh.mm.ss')}.mp4`)
     console.log('writing to', outputFilePath)
     console.log('\n')
 
@@ -208,7 +222,7 @@ const convertToVideo = async opts => {
       '-safe', '0',
 
       // Input #0
-      '-i', path.join(tmpDir.name, 'video.ffconcat'),
+      '-i', concatFilePath,
 
       // Input #1
       ...(shouldWatermark ? ['-i', path.join(tmpDir.name, 'watermark.png')] : [])
@@ -250,7 +264,9 @@ const convertToVideo = async opts => {
     ])
 
     args = args.concat([
-      '-r', scene.fps,
+      '-r', Number.isFinite(Number(scene.fps)) && Number(scene.fps) >= 1 && Number(scene.fps) <= 120
+        ? Number(scene.fps)
+        : 24,
       '-vcodec', 'libx264',
       '-acodec', 'aac',
 

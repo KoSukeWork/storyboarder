@@ -57,13 +57,14 @@ document.addEventListener('visibilitychange', reset, false)
 
 // NOTE: order does not matter. e.g.: CommandOrControl+Alt == Alt+CommandOrControl
 const findMatchingCommandsByKeys = (keymap, pressedKeys) => {
-  if (!pressedKeys) return []
+  if (!pressedKeys || !keymap || typeof keymap !== 'object') return []
   
   // set of matching commands
   let matches = new Set()
   
   // for all the commands we know of
   for (let command in keymap) {
+    if (!keymap || typeof keymap[command] !== 'string' || keymap[command].length > 256) continue
     let match = true
   
     // get the individual keys that make up the command
@@ -109,10 +110,11 @@ const findMatchingCommandsByKeys = (keymap, pressedKeys) => {
 // determine if, given a match, we should also reset the combo
 // see https://github.com/coosto/ShortcutJS/issues/20
 const _comboShouldTriggerReset = (keymap, pressedKeys) => {
-  if (!pressedKeys) return false
+  if (!pressedKeys || !keymap || typeof keymap !== 'object') return false
   
   // for all the commands we know of
   for (let command in keymap) {  
+    if (!keymap || typeof keymap[command] !== 'string' || keymap[command].length > 256) continue
     // get the individual keys that make up the command
     let keys = keymap[command].split('+')
   

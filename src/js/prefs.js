@@ -9,6 +9,23 @@ const pkg = require('../../package.json')
 const util = require('./utils/index') // for Object.equals
 
 let prefFile
+const MAX_PREFS_FILE_SIZE = 5 * 1024 * 1024
+
+const isUnsafeKey = key => key === '__proto__' || key === 'prototype' || key === 'constructor'
+const sanitizePrefValue = (value, depth = 0) => {
+  if (value == null || typeof value === 'string' || typeof value === 'boolean') return value
+  if (typeof value === 'number') return Number.isFinite(value) ? value : undefined
+  if (depth > 8) return undefined
+  if (Array.isArray(value)) return value.slice(0, 10000).map(item => sanitizePrefValue(item, depth + 1))
+  if (typeof value !== 'object') return undefined
+  const result = {}
+  for (const [key, item] of Object.entries(value).slice(0, 10000)) {
+    if (isUnsafeKey(key)) continue
+    const sanitized = sanitizePrefValue(item, depth + 1)
+    if (sanitized !== undefined) result[key] = sanitized
+  }
+  return result
+}
 
 const defaultPrefs = {
   version: pkg.version,
@@ -88,7 +105,13 @@ const load = () => {
   try {
     // load existing prefs
     // log.info("READING FROM DISK")
-    prefs = verify(JSON.parse(fs.readFileSync(prefFile)))
+    const stat = fs.statSync(prefFile)
+    if (!stat.isFile() || stat.size > MAX_PREFS_FILE_SIZE) throw new Error('Preferences file is too large or invalid')
+    // Keep the Buffer overload for compatibility with the repository's
+    // mock-fs based main-process tests.
+    const parsed = JSON.parse(fs.readFileSync(prefFile))
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Preferences must be an object')
+    prefs = verify(sanitizePrefValue(parsed))
   } catch (e) {
     log.error('Could not read prefs. Loading defaults.')
     log.error(e)
@@ -104,6 +127,8 @@ const load = () => {
 const savePrefs = (newPref) => {
   // log.info('SAVEPREFS')
   if (!newPref) return
+  newPref = sanitizePrefValue(newPref)
+  if (!newPref || typeof newPref !== 'object' || Array.isArray(newPref)) return
   if (Object.equals(newPref,prefs)) {
     // log.info("IM THE SAME!!!!")
   } else {
@@ -115,16 +140,28 @@ const savePrefs = (newPref) => {
 
 const set = (keyPath, value, sync) => {
   // log.info('SETTING')
+  if (typeof keyPath !== 'string' || keyPath.length === 0 || keyPath.length > 256) return
   const keys = keyPath.split(/\./)
+  if (keys.some(key => !key || key.length > 128 || isUnsafeKey(key))) return
   let obj = prefs
   while (keys.length > 1) {
     const key = keys.shift()
+    // A malformed preference file may contain a scalar where a nested
+    // preference object is expected.  Do not let an IPC-originated dotted
+    // key turn that inconsistency into a renderer-visible TypeError.
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return
     if (!Object.prototype.hasOwnProperty.call(obj, key)) {
       obj[key] = {}
     }
+    if (!obj[key] || typeof obj[key] !== 'object' || Array.isArray(obj[key])) return
     obj = obj[key]
   }
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return
   let keyProp = keys.shift()
+  if (value !== undefined) {
+    value = sanitizePrefValue(value)
+    if (value === undefined) return
+  }
   let prevValue = obj[keyProp]
   if (Object.equals(prevValue,value)) {
     //log.info("IM THE SAME!!!!")
@@ -152,8 +189,9 @@ const migrate = (_currentPrefs, _defaultPrefs) => {
 
   // Set properties only if they don't exist
   // via https://github.com/ramda/ramda/wiki/Cookbook#set-properties-only-if-they-dont-exist
+  const currentPrefs = sanitizePrefValue(_currentPrefs) || {}
   let mergedPrefs = Object.assign(
-    R.merge(_defaultPrefs, _currentPrefs),
+    R.merge(_defaultPrefs, currentPrefs),
     { version: _defaultPrefs.version }
   )
 

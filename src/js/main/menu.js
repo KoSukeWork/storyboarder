@@ -975,7 +975,7 @@ const createMenu = ({ store, send }) => {
   ipcMain.on('menu:setMenu', (event) => service.send('setMenu'))
   ipcMain.on('menu:setPrintProjectMenu', (event) => service.send('setPrintProjectMenu'))
 
-  ipcMain.on('menu:setEnableAudition', (event, value) => service.send('setEnableAudition', { value }))
+  ipcMain.on('menu:setEnableAudition', (event, value) => service.send('setEnableAudition', { value: value === true }))
 
   // when renderer language changes …
   ipcMain.on('languageChanged', async (event, lng) => {

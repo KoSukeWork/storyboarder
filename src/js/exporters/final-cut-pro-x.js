@@ -1,6 +1,7 @@
 // https://developer.apple.com/library/content/documentation/FinalCutProX/Reference/FinalCutProXXMLFormat
 const Fraction = require('fraction.js')
 const path = require('path')
+const { resolveInside } = require('../utils/security')
 const Tone = require('tone')
 
 const { msecsToFrames } = require('./common')
@@ -127,11 +128,11 @@ const generateFinalCutProXData = async (boardData, { projectFileAbsolutePath, ou
       let buffer
       try {
         buffer = await new Tone.Buffer().load(
-          path.join(dirname, 'images', board.audio.filename)
+          resolveInside(path.join(dirname, 'images'), board.audio.filename)
         )
       } catch (err) {
-        console.error(err)
-        throw new Error(`could not load audio file ${board.audio.filename}`)
+        console.warn(`Skipping invalid or unreadable project audio path: ${board.audio.filename}`)
+        continue
       }
 
       let audioChannels = buffer.numberOfChannels

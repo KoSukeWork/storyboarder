@@ -2,6 +2,7 @@
 <html>
   <head>
     <meta charset="UTF-8">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'; connect-src 'self'">
     <link rel="stylesheet" href="../../../css/fonts.css">
     <link rel="stylesheet" href="./style.css">
     <link rel="stylesheet" href="../../../css/spinkit.css">    
@@ -9,8 +10,6 @@
   </head>
   <body>
     <div class="container"></div>
-    <script>
-      require('../../../build/print-project.js')
-    </script>
+    <script src="../../../build/print-project.js"></script>
   </body>
 </html>

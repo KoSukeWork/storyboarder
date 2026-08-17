@@ -86,8 +86,46 @@ const renderPlaceholders = () => {
   }
 }
 
+// Shot-template parameters are assembled from editable text.  The generator
+// historically returned an HTML string, so copy only the small select/option
+// vocabulary the sidebar needs instead of attaching arbitrary markup.
+const renderSafeSelects = markup => {
+  const container = document.querySelector('#sts-select')
+  if (!container) return
+
+  const template = document.createElement('template')
+  template.innerHTML = typeof markup === 'string' ? markup.slice(0, 128 * 1024) : ''
+  const allowedTags = new Set(['select', 'option', 'optgroup'])
+  const allowedAttributes = new Set(['id', 'name', 'value', 'class', 'selected', 'disabled', 'multiple', 'size'])
+
+  const copyNode = node => {
+    if (node.nodeType === Node.TEXT_NODE) return document.createTextNode(node.nodeValue || '')
+    if (node.nodeType !== Node.ELEMENT_NODE || !allowedTags.has(node.tagName.toLowerCase())) return null
+    const copy = document.createElement(node.tagName.toLowerCase())
+    for (const attribute of Array.from(node.attributes)) {
+      const name = attribute.name.toLowerCase()
+      if (!allowedAttributes.has(name)) continue
+      // Values are data only; setting them through the DOM does not create
+      // executable URLs or event handlers.
+      copy.setAttribute(name, attribute.value.slice(0, 4096))
+    }
+    for (const child of Array.from(node.childNodes)) {
+      const safeChild = copyNode(child)
+      if (safeChild) copy.appendChild(safeChild)
+    }
+    return copy
+  }
+
+  const fragment = document.createDocumentFragment()
+  for (const child of Array.from(template.content.childNodes)) {
+    const safeChild = copyNode(child)
+    if (safeChild) fragment.appendChild(safeChild)
+  }
+  container.replaceChildren(fragment)
+}
+
 const renderSelects = selects => {
-  document.querySelector("#sts-select").innerHTML = selects
+  renderSafeSelects(selects)
   emitter.emit('change')
 }
 

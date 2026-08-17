@@ -1,6 +1,5 @@
 const { BrowserWindow } = require('electron')
 const path = require('path')
-const remoteMain = require('@electron/remote/main')
 
 let win
 
@@ -28,16 +27,22 @@ const show = async ({ parent }) => {
     modal: true,
 
     webPreferences: {
-      nodeIntegration: true,
-      contextIsolation: false
+      webSecurity: true,
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: true,
+      preload: path.join(__dirname, '..', '..', 'preload', 'print-project.js')
     }
   })
-  remoteMain.enable(win.webContents)
+  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  win.webContents.on('will-navigate', event => event.preventDefault())
+  win.webContents.on('will-redirect', event => event.preventDefault())
   win.on('closed', () => { win = null })
   await win.loadFile(path.join(__dirname, 'index.html'))
   win.show()
 }
 
 module.exports = {
-  show
+  show,
+  getWindow: () => win
 }

@@ -250,7 +250,7 @@ class ColorPicker extends EventEmitter {
     }
     document.querySelector(`.color-swatch[data-color-name="${closestColorName}"]`).className += " active"
     // update the name
-    document.querySelector(".color-name .name").innerHTML = closestColorName
+    document.querySelector(".color-name .name").textContent = closestColorName
     document.querySelector(".color-name .color-css").value = this.state.color
 
     console.log('ColorPicker#render', this.state)

@@ -1,7 +1,6 @@
 const fs = require('fs')
-const path = require('path')
-const app = require('@electron/remote').app
-const os = require("os");
+const { app } = require('electron')
+const { resolveInside, resolveForWriteInside } = require('../utils/security')
 
 let prefs
 let isLoaded = false
@@ -13,7 +12,12 @@ const init = () => {
 
 const getData = (filename) => {
   return new Promise((resolve, reject)=>{
-    let filepath = path.join(userDataPath, filename)
+    let filepath
+    try {
+      filepath = resolveInside(userDataPath, filename)
+    } catch (error) {
+      return reject(error)
+    }
     fs.readFile(filepath, (error, file) => {
       if(error) {
         return reject(error)
@@ -31,7 +35,12 @@ const getData = (filename) => {
 
 const saveData = (filename, data) => {
   return new Promise((resolve, reject)=>{
-    let filepath = path.join(userDataPath, filename)
+    let filepath
+    try {
+      filepath = resolveForWriteInside(userDataPath, filename)
+    } catch (error) {
+      return reject(error)
+    }
     fs.writeFile(filepath, JSON.stringify(data, null, 2), (error)=>{
       if(error) {
         return reject(error)
