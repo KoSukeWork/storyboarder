@@ -1,0 +1,129 @@
+:root {
+  color-scheme: light dark;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: #f4f5f7;
+  color: #202124;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 480px;
+  min-height: 100vh;
+  background: #f4f5f7;
+}
+
+.about {
+  max-width: 620px;
+  margin: 0 auto;
+  padding: 36px 42px 30px;
+  text-align: center;
+}
+
+.brand {
+  width: 68px;
+  height: 68px;
+  margin: 0 auto 16px;
+  border-radius: 16px;
+  background: #343a40;
+  color: #fff;
+  font-size: 42px;
+  font-weight: 700;
+  line-height: 68px;
+}
+
+h1 {
+  margin: 0;
+  font-size: 28px;
+  font-weight: 600;
+}
+
+.subtitle {
+  margin: 8px 0 26px;
+  color: #687078;
+  font-size: 14px;
+}
+
+.panel {
+  margin: 14px 0;
+  padding: 18px 22px;
+  border: 1px solid #d8dce1;
+  border-radius: 10px;
+  background: #fff;
+  text-align: left;
+}
+
+h2 {
+  margin: 0 0 8px;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+p {
+  margin: 8px 0 0;
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+a {
+  color: #1769aa;
+  text-decoration: none;
+}
+
+a:hover,
+a:focus {
+  text-decoration: underline;
+}
+
+code {
+  padding: 2px 4px;
+  border-radius: 3px;
+  background: #eef0f2;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+
+.muted,
+.footer {
+  color: #687078;
+}
+
+.footer {
+  margin-top: 22px;
+  font-size: 12px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root,
+  body {
+    background: #202124;
+    color: #f1f3f4;
+  }
+
+  .brand {
+    background: #f1f3f4;
+    color: #202124;
+  }
+
+  .subtitle,
+  .muted,
+  .footer {
+    color: #aeb4ba;
+  }
+
+  .panel {
+    border-color: #454a50;
+    background: #2b2f33;
+  }
+
+  a {
+    color: #8ab4f8;
+  }
+
+  code {
+    background: #454a50;
+  }
+}

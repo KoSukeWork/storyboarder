@@ -5,6 +5,7 @@ const { createMachine, interpret, assign } = require('xstate')
 
 const i18n = require('../services/i18next.config')
 const log = require('../shared/storyboarder-electron-log')
+const projectMetadata = require('../project-metadata')
 
 const createMenu = ({ store, send }) => {
   const keystrokeFor = command => store.getState().entities.keymap[command]
@@ -33,28 +34,35 @@ const createMenu = ({ store, send }) => {
   SubMenuFragments.help = (i18n) => [
     {
       label: i18n.t('menu.help.learn-more'),
-      click () { shell.openExternal('https://wonderunit.com/storyboarder') }
+      click () { shell.openExternal(projectMetadata.repositoryUrl) }
     },
     {
       label: i18n.t('menu.help.getting-started'),
-      click () { shell.openExternal('https://wonderunit.com/storyboarder/faq/#How-do-I-get-started') }
+      click () { shell.openExternal(`${projectMetadata.repositoryUrl}#readme`) }
     },
     {
       label: i18n.t('menu.help.faq'),
-      click () { shell.openExternal('https://wonderunit.com/storyboarder/faq') }
+      click () { shell.openExternal(`${projectMetadata.repositoryUrl}/issues`) }
     },
     {
       type: 'separator'
     },
     {
       label: i18n.t('menu.help.bug-submit'),
-      click () { shell.openExternal('https://github.com/wonderunit/storyboarder/issues/new') }
+      click () { shell.openExternal(projectMetadata.issuesUrl) }
     },
     {
       label: i18n.t('menu.help.show-log-file'),
       click () {
         shell.showItemInFolder(log.transports.file.getFile().path)
       }
+    },
+    {
+      type: 'separator'
+    },
+    {
+      label: i18n.t('menu.help.about-license'),
+      click () { send('showAbout') }
     }
   ]
   SubMenuFragments.windowing = (i18n) => [
@@ -743,8 +751,8 @@ const createMenu = ({ store, send }) => {
         label: app.getName(),
         submenu: [
           {
-            role: 'about',
-            label: i18n.t("menu.about.title")
+            label: i18n.t("menu.about.title"),
+            click: () => send('showAbout')
           },
           ...optionalPreferences,
           // {

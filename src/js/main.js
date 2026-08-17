@@ -69,6 +69,7 @@ const createPrint = require('./print')
 const JWT = require('jsonwebtoken')
 
 const pkg = require('../../package.json')
+const projectMetadata = require('./project-metadata')
 const util = require('./utils/index')
 const {settings:languageSettings} = require('./services/language.config')
 const autoUpdater = require('./auto-updater')
@@ -136,6 +137,7 @@ let newWindow
 let mainWindow
 let sketchWindow
 let keyCommandWindow
+let aboutWindow
 
 let loadingStatusWindow
 let uploadWindow
@@ -2051,6 +2053,60 @@ const grantMainWindowPath = (value, tree = false) => {
   mainWindowPathGrants.set(path.resolve(value), { tree: Boolean(tree), readOnly: false })
 }
 
+const openAboutExternal = url => {
+  if (![projectMetadata.repositoryUrl, projectMetadata.licenseFileUrl, projectMetadata.licenseUrl].includes(url)) return
+  shell.openExternal(url).catch(err => {
+    log.warn('Could not open external About link', err.message)
+  })
+}
+
+let openAboutWindow = () => {
+  if (aboutWindow && !aboutWindow.isDestroyed()) {
+    aboutWindow.show()
+    aboutWindow.focus()
+    return
+  }
+
+  const parent = mainWindow && !mainWindow.isDestroyed()
+    ? mainWindow
+    : (welcomeWindow && !welcomeWindow.isDestroyed() ? welcomeWindow : undefined)
+
+  aboutWindow = new BrowserWindow({
+    width: 620,
+    height: 560,
+    minWidth: 520,
+    minHeight: 480,
+    show: false,
+    center: true,
+    parent,
+    resizable: false,
+    title: 'About Storyboarder',
+    backgroundColor: '#f4f5f7',
+    webPreferences: {
+      nodeIntegration: false,
+      webSecurity: true,
+      contextIsolation: true,
+      sandbox: true
+    }
+  })
+
+  aboutWindow.webContents.setWindowOpenHandler(({ url }) => {
+    openAboutExternal(url)
+    return { action: 'deny' }
+  })
+  aboutWindow.webContents.on('will-navigate', event => {
+    const url = event.url
+    event.preventDefault()
+    openAboutExternal(url)
+  })
+  aboutWindow.webContents.on('will-redirect', event => event.preventDefault())
+  aboutWindow.once('ready-to-show', () => aboutWindow.show())
+  aboutWindow.on('closed', () => {
+    aboutWindow = null
+  })
+  aboutWindow.loadFile(path.join(__dirname, '../about.html'))
+}
+
 const allowedMainWindowRoots = () => {
   const userData = app.getPath('userData')
   const temp = app.getPath('temp')
@@ -2783,6 +2839,10 @@ ipcMain.on('prefs:change', (event, arg) => {
 
 menuBus.on('showKeyCommands', (event, arg) => {
   openKeyCommandWindow()
+})
+
+menuBus.on('showAbout', () => {
+  openAboutWindow()
 })
 
 ipcMain.on('analyticsScreen', (event, screenName) => {

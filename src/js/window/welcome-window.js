@@ -72,7 +72,7 @@ document.querySelector('#open-storyboard').onclick = () => api().openDialog()
 document.querySelector('#new-storyboard').onclick = () => api().openNewWindow()
 document.querySelector('#getting-started').onclick = event => {
   event.preventDefault()
-  api().openExternal('https://wonderunit.com/storyboarder/faq/#How-do-I-get-started')
+  api().openExternal('https://github.com/KoSukeWork/storyboarder#readme')
 }
 for (const selector of ['#getting-started', '#open-storyboard', '#new-storyboard']) {
   const element = document.querySelector(selector)

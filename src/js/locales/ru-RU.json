@@ -73,7 +73,8 @@
 			"getting-started": "Как начать",
 			"faq": "Часто задаваемые вопросы…",
 			"bug-submit": "Нашли баг? Оставьте issue!!!",
-			"show-log-file":"Открыть лог-файл..."
+			"show-log-file":"Открыть лог-файл...",
+			"about-license":"О Storyboarder"
 		},
 		"navigation": {
 			"title": "Навигация",

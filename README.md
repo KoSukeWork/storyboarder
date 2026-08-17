@@ -12,6 +12,14 @@ Since the original repo have been stopped develop since May, 2021, and too many 
 
 Please note that this fork may never develop new feature.
 
+The fork is maintained at <https://github.com/KoSukeWork/storyboarder>.
+
+## License
+
+This fork is distributed under the GNU General Public License, version 3.0
+only. See [LICENSE](LICENSE). Copyright and license notices for upstream code
+and third-party components remain applicable.
+
 # Build
 
 The same as any other Electron project.

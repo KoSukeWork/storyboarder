@@ -73,7 +73,8 @@
       "getting-started": "Getting Started…",
       "faq": "Frequently Asked Questions…",
       "bug-submit": "Found a bug? Submit an issue!!!",
-      "show-log-file": "Show Log File..."
+      "show-log-file": "Show Log File...",
+      "about-license": "About Storyboarder"
     },
     "navigation": {
       "title": "Navigation",

@@ -1,8 +1,13 @@
 {
   "name": "storyboarder",
   "productName": "Storyboarder",
-  "version": "3.1.0",
+  "version": "3.1.1",
   "description": "The fastest way to storyboard.",
+  "license": "GPL-3.0-only",
+  "homepage": "https://github.com/KoSukeWork/storyboarder#readme",
+  "bugs": {
+    "url": "https://github.com/KoSukeWork/storyboarder/issues"
+  },
   "main": "src/js/main.js",
   "scripts": {
     "start:main-window": "node scripts/build-main-window.js --watch",
@@ -34,7 +39,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/qian2501/storyboarder.git"
+    "url": "git+https://github.com/KoSukeWork/storyboarder.git"
   },
   "keywords": [
     "fountain",
@@ -42,8 +47,8 @@
     "storyboarder"
   ],
   "author": {
-    "email": "qian2501@gmail.com",
-    "name": "Qian2501"
+    "email": "kosukework0@gmail.com",
+    "name": "KoSukeWork"
   },
   "build": {
     "beforeBuild": "scripts/electron-builder-before-build.js",

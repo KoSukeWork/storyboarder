@@ -73,7 +73,8 @@
       "getting-started": "如何入门",
       "faq": "常见问题...",
       "bug-submit": "发现了bug？报告问题!!!",
-      "show-log-file": "打开日志文件..."
+      "show-log-file": "打开日志文件...",
+      "about-license": "关于 Storyboarder"
     },
     "navigation": {
       "title": "走带控制",
