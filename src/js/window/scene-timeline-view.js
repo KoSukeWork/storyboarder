@@ -5,6 +5,12 @@ const { clamp, msToTime } = require('../utils')
 
 const boardModel = require('../models/board')
 const sceneModel = require('../models/scene')
+const {
+  sceneHasAudio,
+  sceneBoundaryTimes,
+  cursorTimeFromPointer,
+  boardIndexAtTime
+} = require('../shared/helpers/timeline')
 
 // via https://webaudiodemos.appspot.com/AudioRecorder/js/audiodisplay.js
 const drawBuffer = (width, height, context, data) => {
@@ -334,7 +340,7 @@ class BoardView {
 
     return $.div(
       {
-        class: 'board',
+        class: `board board--${kind}`,
         on: this.kind === 'board'
           ? {
             pointerdown: this.onPointerDown,
@@ -679,6 +685,7 @@ class TimelineView {
     this.mini = props.mini
 
     this.currentBoardIndex = props.currentBoardIndex
+    this.cursorTimeInMsecs = props.cursorTimeInMsecs
 
     this.getAudioBufferByFilename = props.getAudioBufferByFilename
     this.getSrcByUid = props.getSrcByUid
@@ -686,6 +693,7 @@ class TimelineView {
     this.onBoardPointerDown = this.onBoardPointerDown.bind(this)
     this.onBoardPointerUp = this.onBoardPointerUp.bind(this)
     this.onCancelMove = this.onCancelMove.bind(this)
+    this.onTimelinePointerDown = this.onTimelinePointerDown.bind(this)
 
     this.onDocumentPointerMove = this.onDocumentPointerMove.bind(this)
 
@@ -693,6 +701,7 @@ class TimelineView {
     this.onSetCurrentBoardIndex = props.onSetCurrentBoardIndex
     this.onModifyBoardDurationByIndex = props.onModifyBoardDurationByIndex
     this.onScroll = props.onScroll
+    this.onSetCursorTime = props.onSetCursorTime
 
     this.show = props.show
 
@@ -705,8 +714,13 @@ class TimelineView {
       draggableBoardOriginalTime: undefined,
       draggableOffsetInPx: 0,
 
-      insertPointInMsecs: undefined
+      insertPointInMsecs: undefined,
+
+      pointerDownX: undefined,
+      didMove: false
     }
+
+    this.sceneDurationInMsecs = sceneModel.sceneDuration(this.scene)
 
     // perform custom initialization here...
     // then call `etch.initialize`:
@@ -724,7 +738,8 @@ class TimelineView {
               ref: 'timelineScrollable',
               class: 'timeline-scrollable',
               on: {
-                wheel: this.onWheel
+                wheel: this.onWheel,
+                pointerdown: this.onTimelinePointerDown
               },
               style: `position: relative;
                       overflow: scroll;`
@@ -812,6 +827,23 @@ class TimelineView {
 
     // let entireWidth = this.sceneDurationInMsecs * this.pixelsPerMsec * this.scale
 
+    let cursorTime = Number.isFinite(this.cursorTimeInMsecs)
+      ? this.cursorTimeInMsecs
+      : 0
+    let playheadLeft = Number.isFinite(this.pixelsPerMsec)
+      ? cursorTime * this.pixelsPerMsec * this.scale
+      : 0
+
+    let playheadView = $.div({
+      ref: 'playhead',
+      class: `timeline-playhead${this.mini ? ' timeline-playhead--mini' : ''}`,
+      style: `position: absolute;
+              top: 0;
+              left: ${Math.max(0, Math.round(playheadLeft))}px;
+              bottom: 0;
+              pointer-events: none;`
+    }, this.mini ? null : $.div({ class: 'timeline-playhead__handle' }))
+
     let caretView = null
     if (this.state.draggableBoardView) {
       let movementX = this.state.draggableOffsetInPx / (this.pixelsPerMsec * this.scale)
@@ -858,7 +890,8 @@ class TimelineView {
           ref: 'timelineScrollable',
           class: 'timeline-scrollable',
           on: {
-            wheel: this.onWheel
+            wheel: this.onWheel,
+            pointerdown: this.onTimelinePointerDown
           },
           style: `position: relative;
                   ${cursor ? `cursor: ${cursor}` : ''};
@@ -872,7 +905,8 @@ class TimelineView {
           },
           [
             boardLane,
-            !this.mini ? audioLanes : null
+            !this.mini ? audioLanes : null,
+            playheadView
           ]
         )
       ),
@@ -899,6 +933,8 @@ class TimelineView {
     this.pixelsPerMsec = this.containerWidth / this.sceneDurationInMsecs
 
     if (props.currentBoardIndex != null) this.currentBoardIndex = props.currentBoardIndex
+    if (props.cursorTimeInMsecs != null) this.cursorTimeInMsecs = props.cursorTimeInMsecs
+    if (props.onSetCursorTime != null) this.onSetCursorTime = props.onSetCursorTime
 
     // perform custom update logic here...
     // then call `etch.update`, which is async and returns a promise
@@ -941,6 +977,56 @@ class TimelineView {
     }
   }
 
+  setCursorTime (time) {
+    this.cursorTimeInMsecs = Number.isFinite(time) ? time : 0
+    this.updatePlayheadPosition()
+  }
+
+  updatePlayheadPosition () {
+    if (!this.refs || !this.refs.playhead) return
+    let left = Number.isFinite(this.pixelsPerMsec)
+      ? this.cursorTimeInMsecs * this.pixelsPerMsec * this.scale
+      : 0
+    this.refs.playhead.style.left = `${Math.max(0, Math.round(left))}px`
+  }
+
+  setCursorFromPointer (event, shouldSelectBoard = true) {
+    if (!this.refs || !this.refs.timelineScrollable) return
+
+    let rect = this.refs.timelineScrollable.getBoundingClientRect()
+    let sceneDuration = sceneModel.sceneDuration(this.scene)
+    let time = cursorTimeFromPointer({
+      clientX: event.clientX,
+      rectLeft: rect.left,
+      scrollLeft: this.refs.timelineScrollable.scrollLeft,
+      pixelsPerMsec: this.pixelsPerMsec,
+      scale: this.scale,
+      sceneDuration,
+      snap: !sceneHasAudio(this.scene),
+      boundaries: sceneBoundaryTimes(this.scene, sceneDuration)
+    })
+
+    this.setCursorTime(time)
+    this.onSetCursorTime && this.onSetCursorTime(time)
+
+    if (shouldSelectBoard) {
+      let index = boardIndexAtTime(this.scene.boards, time)
+      if (index >= 0 && this.onSetCurrentBoardIndex) {
+        this.onSetCurrentBoardIndex(index, { preserveCursor: true })
+      }
+    }
+  }
+
+  onTimelinePointerDown (event) {
+    if (event.button != null && event.button !== 0) return
+
+    let target = event.target
+    let boardElement = target && target.closest && target.closest('.board')
+    if (boardElement && !boardElement.classList.contains('board--audio')) return
+
+    this.setCursorFromPointer(event)
+  }
+
   async onBoardPointerDown (event, boardView) {
     let index = this.scene.boards.indexOf(boardView.board)
 
@@ -955,6 +1041,8 @@ class TimelineView {
       this.state.draggableBoardOriginalTime = boardView.board.time
       this.state.draggableOffsetInPx = 0
     }
+    this.state.pointerDownX = event.clientX
+    this.state.didMove = false
     this.update({})
   }
 
@@ -962,6 +1050,9 @@ class TimelineView {
     if (this.state.draggableBoardView || this.state.resizableBoardView) {
       this.state.resizableOffsetInPx += event.movementX
       this.state.draggableOffsetInPx += event.movementX
+      if (Math.abs(this.state.resizableOffsetInPx) > 2 || Math.abs(this.state.draggableOffsetInPx) > 2) {
+        this.state.didMove = true
+      }
     }
 
     // if (this.state.draggableBoardView) {}
@@ -1013,6 +1104,9 @@ class TimelineView {
     this.state.draggableBoardOriginalTime = undefined
     this.state.draggableOffsetInPx = 0
 
+    this.state.pointerDownX = undefined
+    this.state.didMove = false
+
     this.state.insertPointInMsecs = undefined
 
     if (selections != null && position != null) {
@@ -1025,6 +1119,9 @@ class TimelineView {
   }
 
   async onBoardPointerUp (event, boardView) {
+    if (this.state.draggableBoardView && !this.state.didMove) {
+      this.setCursorFromPointer(event, false)
+    }
     await this.completeDragOrResize()
   }
 
@@ -1063,6 +1160,7 @@ class TimelineView {
     //   })
     // }
     this.refs.timelineScrollable.scrollLeft = scrollLeft
+    this.updatePlayheadPosition()
   }
 }
 
@@ -1079,15 +1177,18 @@ class SceneTimelineView {
     this.mini = props.mini
 
     this.currentBoardIndex = props.currentBoardIndex
+    this.cursorTimeInMsecs = props.cursorTimeInMsecs
     this.getAudioBufferByFilename = props.getAudioBufferByFilename
     this.getSrcByUid = props.getSrcByUid
 
     this.onMoveSelectedBoards = props.onMoveSelectedBoards
     this.onSetCurrentBoardIndex = props.onSetCurrentBoardIndex
     this.onModifyBoardDurationByIndex = props.onModifyBoardDurationByIndex
+    this.onSetCursorTime = props.onSetCursorTime
 
     this.onTimelineScroll = this.onTimelineScroll.bind(this)
     this.onScaleControlDrag = this.onScaleControlDrag.bind(this)
+    this.onCursorTimeChange = this.onCursorTimeChange.bind(this)
 
     etch.initialize(this)
   }
@@ -1095,7 +1196,8 @@ class SceneTimelineView {
   render () {
     let sceneDurationInMsecs = sceneModel.sceneDuration(this.scene)
 
-    let currTime = msToTime(Math.floor(this.scene.boards[this.currentBoardIndex].time / 1000) * 1000)
+    let currentBoard = this.scene.boards[this.currentBoardIndex] || this.scene.boards[0]
+    let currTime = msToTime(Math.floor((currentBoard ? currentBoard.time : 0) / 1000) * 1000)
     let totalTime = msToTime(Math.ceil(sceneDurationInMsecs / 1000) * 1000)
 
     return $.div(
@@ -1115,6 +1217,7 @@ class SceneTimelineView {
             position: this.position,
 
             currentBoardIndex: this.currentBoardIndex,
+            cursorTimeInMsecs: this.cursorTimeInMsecs,
 
             getAudioBufferByFilename: this.getAudioBufferByFilename,
             getSrcByUid: this.getSrcByUid,
@@ -1122,6 +1225,7 @@ class SceneTimelineView {
             onMoveSelectedBoards: this.onMoveSelectedBoards,
             onSetCurrentBoardIndex: this.onSetCurrentBoardIndex,
             onModifyBoardDurationByIndex: this.onModifyBoardDurationByIndex,
+            onSetCursorTime: this.onCursorTimeChange,
 
             onScroll: this.onTimelineScroll
           })
@@ -1152,8 +1256,11 @@ class SceneTimelineView {
 
                   mini: true,
 
-                  currentBoardIndex: this.currentBoardIndex,
-                  getAudioBufferByFilename: this.getAudioBufferByFilename
+                   currentBoardIndex: this.currentBoardIndex,
+                   cursorTimeInMsecs: this.cursorTimeInMsecs,
+                   onSetCurrentBoardIndex: this.onSetCurrentBoardIndex,
+                   onSetCursorTime: this.onCursorTimeChange,
+                   getAudioBufferByFilename: this.getAudioBufferByFilename
                 }),
 
                 $(ScaleControlView, {
@@ -1189,7 +1296,9 @@ class SceneTimelineView {
           let scaleFromZoom = 1 / this.scale
 
           let sceneDurationInMsecs = sceneModel.sceneDuration(this.scene)
-          let board = this.scene.boards[props.currentBoardIndex]
+           let board = this.scene.boards[props.currentBoardIndex]
+           if (!board) board = this.scene.boards[0]
+           if (!board) return etch.update(this)
 
           let start = board.time / sceneDurationInMsecs
           let dur = boardModel.boardDuration(this.scene, board) / sceneDurationInMsecs
@@ -1252,6 +1361,17 @@ class SceneTimelineView {
     this.refs.miniTimelineView.connectedCallback()
     this.refs.timelineView.connectedCallback()
     this.refs.scaleControlView.connectedCallback()
+  }
+
+  setCursorTime (time) {
+    this.cursorTimeInMsecs = Number.isFinite(time) ? time : 0
+    if (this.refs.timelineView) this.refs.timelineView.setCursorTime(this.cursorTimeInMsecs)
+    if (this.refs.miniTimelineView) this.refs.miniTimelineView.setCursorTime(this.cursorTimeInMsecs)
+  }
+
+  onCursorTimeChange (time) {
+    this.setCursorTime(time)
+    this.onSetCursorTime && this.onSetCursorTime(time)
   }
 
   onScaleControlDrag ({ position, scale }) {

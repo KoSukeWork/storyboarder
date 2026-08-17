@@ -56,6 +56,13 @@ const importerPsd = require('../importers/psd')
 const sceneSettingsView = require('./scene-settings-view')
 
 const boardModel = require('../models/board')
+const sceneModel = require('../models/scene')
+const {
+  boardIndexAtTime,
+  insertionIndexAtTime,
+  sceneBoundaryTimes,
+  snapTimeToBoundary
+} = require('../shared/helpers/timeline')
 const watermarkModel = require('../models/watermark')
 
 const AudioPlayback = require('./audio-playback')
@@ -253,6 +260,7 @@ let boardFilename // absolute path to .storyboarder
 let boardPath
 let boardData
 let currentBoard = 0
+let timelineCursorTimeInMsecs = 0
 
 let scriptFilePath // .fountain/.fdx, only used for multi-scene projects
 let scriptData
@@ -624,7 +632,7 @@ const load = async (event, args) => {
           // sanity check
           if (!textInputMode) {
             // manually construct a new board
-            newBoard()
+            (shouldRenderThumbnailDrawer ? newBoard() : newBoardAtTimelineCursor())
               .then(index => {
                 // go to the board
                 gotoBoard(index)
@@ -2263,6 +2271,28 @@ const loadBoardUI = async () => {
 }
 
 
+const setTimelineCursorTime = (time, { selectBoard = false } = {}) => {
+  if (!boardData || !Array.isArray(boardData.boards) || boardData.boards.length === 0) {
+    timelineCursorTimeInMsecs = 0
+    return
+  }
+
+  let duration = sceneModel.sceneDuration(boardData)
+  let numericTime = Number(time)
+  if (!Number.isFinite(numericTime)) numericTime = 0
+  timelineCursorTimeInMsecs = Math.min(Math.max(Math.round(numericTime), 0), duration)
+
+  if (sceneTimelineView) sceneTimelineView.setCursorTime(timelineCursorTimeInMsecs)
+
+  if (selectBoard) {
+    let index = boardIndexAtTime(boardData.boards, timelineCursorTimeInMsecs)
+    if (index >= 0 && index !== currentBoard) {
+      currentBoard = index
+      gotoBoard(currentBoard)
+    }
+  }
+}
+
 // whenever the scene changes
 const renderScene = async () => {
   audioPlayback.setSceneData(boardData)
@@ -2271,6 +2301,10 @@ const renderScene = async () => {
   const { failed } = await audioPlayback.updateBuffers()
   failed.forEach(filename => notifications.notify({ message: `Could not load audio file ${filename}` }))
   updateAudioDurations()
+
+  if (boardData.boards[currentBoard]) {
+    setTimelineCursorTime(boardData.boards[currentBoard].time)
+  }
 
   // now that audio buffers have loaded, we can create the scene timeline
   // if it doesn't already exist
@@ -2286,15 +2320,22 @@ const renderScene = async () => {
       mini: false,
 
       currentBoardIndex: currentBoard,
+      cursorTimeInMsecs: timelineCursorTimeInMsecs,
 
       getAudioBufferByFilename: audioPlayback.getAudioBufferByFilename.bind(audioPlayback),
 
-      onSetCurrentBoardIndex: async index => {
+      onSetCurrentBoardIndex: async (index, options = {}) => {
+        if (!options.preserveCursor && boardData.boards[index]) {
+          setTimelineCursorTime(boardData.boards[index].time)
+        }
         if (currentBoard !== index) {
           await saveImageFile()
           currentBoard = index
-          gotoBoard(currentBoard)
+          gotoBoard(currentBoard, false, { preserveTimelineCursor: !!options.preserveCursor })
         }
+      },
+      onSetCursorTime: time => {
+        setTimelineCursorTime(time)
       },
 
       onMoveSelectedBoards: (_selections, _position) => {
@@ -2411,6 +2452,16 @@ let newBoard = async (position, shouldAddToUndoStack = true) => {
   }
 
   return position
+}
+
+const newBoardAtTimelineCursor = async () => {
+  let sceneDurationInMsecs = sceneModel.sceneDuration(boardData)
+  let insertionTime = snapTimeToBoundary(
+    timelineCursorTimeInMsecs,
+    sceneBoundaryTimes(boardData, sceneDurationInMsecs)
+  )
+  let position = insertionIndexAtTime(boardData.boards, insertionTime)
+  return newBoard(position)
 }
 
 // Called from "Import Images to New Boards…" or from window.ondrop
@@ -3604,7 +3655,10 @@ let goNextBoard = async (direction, shouldPreserveSelections = false) => {
   }
 }
 
-let gotoBoard = (boardNumber, shouldPreserveSelections = false) => {
+let gotoBoard = (boardNumber, shouldPreserveSelections = false, {
+  preserveTimelineCursor = false,
+  playbackTimeInMsecs
+} = {}) => {
   if(isRecording && isRecordingStarted) {
     // make sure we capture the last frame
     // grab full-size image from current sketchpane (in memory)
@@ -3631,6 +3685,10 @@ let gotoBoard = (boardNumber, shouldPreserveSelections = false) => {
     currentBoard = boardNumber
     currentBoard = Math.max(currentBoard, 0)
     currentBoard = Math.min(currentBoard, boardData.boards.length - 1)
+
+    if (!preserveTimelineCursor && !playbackMode && boardData.boards[currentBoard]) {
+      setTimelineCursorTime(boardData.boards[currentBoard].time)
+    }
 
     if (!shouldPreserveSelections) selections.clear()
     selections = new Set([...selections.add(currentBoard)].sort(util.compareNumbers))
@@ -3713,7 +3771,12 @@ let gotoBoard = (boardNumber, shouldPreserveSelections = false) => {
 
     serial([updateFromLinkIfRequired, () => updateSketchPaneBoard()])
       .then(() => {
-        audioPlayback.playBoard(currentBoard)
+        audioPlayback.playBoard(
+          currentBoard,
+          Number.isFinite(playbackTimeInMsecs)
+            ? playbackTimeInMsecs
+            : boardData.boards[currentBoard].time
+        )
         resolve()
       }).catch(e => {
         log.info('gotoBoard could not updateSketchPaneBoard')
@@ -4175,12 +4238,15 @@ const updateSceneTiming = () => {
 
     currentTime += boardModel.boardDuration(boardData, board)
   }
+
+  setTimelineCursorTime(timelineCursorTimeInMsecs)
 }
 
 const renderSceneTimeline = () => {
   sceneTimelineView && sceneTimelineView.update({
     scene: boardData,
-    currentBoardIndex: currentBoard
+    currentBoardIndex: currentBoard,
+    cursorTimeInMsecs: timelineCursorTimeInMsecs
   })
 }
 
@@ -5093,12 +5159,22 @@ let speakingMode = false
 let utter = new SpeechSynthesisUtterance()
 
 const startPlaying = () => {
+  let sceneDurationInMsecs = sceneModel.sceneDuration(boardData)
+  if (sceneDurationInMsecs <= 0 || timelineCursorTimeInMsecs >= sceneDurationInMsecs) {
+    setTimelineCursorTime(sceneDurationInMsecs)
+    return
+  }
+
+  let boardIndex = boardIndexAtTime(boardData.boards, timelineCursorTimeInMsecs)
+  if (boardIndex < 0) return
+
+  currentBoard = boardIndex
   playbackMode = true
   playbackStart = process.hrtime.bigint()
-  playbackFrom = boardData.boards[currentBoard].time
+  playbackFrom = timelineCursorTimeInMsecs
 
   audioPlayback.start()
-  audioPlayback.playBoard(currentBoard)
+  audioPlayback.playBoard(currentBoard, playbackFrom)
 
   playbackAdvance()
 
@@ -5144,27 +5220,27 @@ const playbackAdvance = async () => {
   let now = process.hrtime.bigint()
   let d = playbackFrom + Number((now - playbackStart) / NANOSECONDS_TO_MSECS)
 
-  let lastBoard = boardData.boards[boardData.boards.length - 1]
-  if (d > lastBoard.time + boardModel.boardDurationWithAudio(boardData, lastBoard)) {
+  let sceneDurationInMsecs = sceneModel.sceneDuration(boardData)
+  if (d >= sceneDurationInMsecs) {
     // console.log('playbackAdvance: done!')
+    setTimelineCursorTime(sceneDurationInMsecs)
     stopPlaying()
     return
   }
 
-  let boardNow
-  for (let board of boardData.boards) {
-    if (board.time > d) {
-      break
-    } else {
-      boardNow = board
-    }
-  }
+  setTimelineCursorTime(d)
+
+  let boardNowIndex = boardIndexAtTime(boardData.boards, d)
+  let boardNow = boardData.boards[boardNowIndex]
   if (boardData.boards[currentBoard] !== boardNow) {
     if (playbackMode && boardData.boards[currentBoard].dialogue && speakingMode) {
       playSpeech()
     }
 
-    await gotoBoard(boardData.boards.indexOf(boardNow))
+    await gotoBoard(boardNowIndex, false, {
+      preserveTimelineCursor: true,
+      playbackTimeInMsecs: d
+    })
   }
 
   // console.log('playbackAdvance', boardNow.number)
@@ -5345,7 +5421,12 @@ const toggleTimeline = () => {
 ipcRenderer.on('newBoard', (event, args)=>{
   // TODO fix doubling bug https://github.com/wonderunit/storyboarder/issues/1206
   if (!textInputMode) {
-    if (args > 0) {
+    if (!shouldRenderThumbnailDrawer) {
+      newBoardAtTimelineCursor().then(index => {
+        gotoBoard(index)
+        ipcRenderer.send('analyticsEvent', 'Board', 'new')
+      }).catch(err => log.error(err))
+    } else if (args > 0) {
       // insert after
       newBoard().then(index => {
         gotoBoard(index)

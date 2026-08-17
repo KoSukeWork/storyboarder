@@ -156,7 +156,7 @@ class AudioPlayback {
     return Tone.Buffer.supportsType(url)
   }
 
-  playBoard (index) {
+  playBoard (index, timelineTimeInMsecs) {
     if (this.isBypassed) return
 
     // is the user auditioning audio by moving from board to board?
@@ -173,6 +173,9 @@ class AudioPlayback {
     // const CUT_EARLY_IN_SECONDS = 0.5
 
     let playingBoard = this.sceneData.boards[index]
+    let playbackTime = Number.isFinite(timelineTimeInMsecs)
+      ? timelineTimeInMsecs
+      : playingBoard.time
 
     for (let i = 0; i < this.sceneData.boards.length; i++) {
       let board = this.sceneData.boards[i]
@@ -202,21 +205,24 @@ class AudioPlayback {
           // for some reason, this causes a warning:
           // "Time is in the past. Scheduled time must be >= AudioContext.currentTime"
           // Couldn't figure out how to prevent that. Seems to be harmless? :/
-          player.start(
-            // start now
-            Tone.Time(),
-            // no offset
-            0
-            // duration, cut early
-            // durationInSeconds
-          )
+          let offsetInMsecs = Math.max(0, playbackTime - board.time)
+          if (offsetInMsecs < player.buffer.duration * MSECS_IN_A_SECOND) {
+            player.start(
+              // start now
+              Tone.Time(),
+              // start at the cursor's offset in this board
+              offsetInMsecs / MSECS_IN_A_SECOND
+              // duration, cut early
+              // durationInSeconds
+            )
+          }
 
         // does this board end AFTER this current playing board starts?
         } else if (
           // it started before
-          board.time < playingBoard.time &&
+          board.time < playbackTime &&
           // ... but it ends after
-          ((board.time + (player.buffer.duration * MSECS_IN_A_SECOND)) > playingBoard.time) &&
+          ((board.time + (player.buffer.duration * MSECS_IN_A_SECOND)) > playbackTime) &&
           // ... and we're NOT in auditioning mode
           //   (i.e.: we don't want to play overlapping audio from prior boards
           //    when we're auditioning a single board)
@@ -224,7 +230,7 @@ class AudioPlayback {
         ) {
           // console.log('\tfound overlapping board, i')
           if (board.audio) {
-            let offsetInMsecs = playingBoard.time - board.time
+            let offsetInMsecs = playbackTime - board.time
             // console.log('\tplaying overlapping', board.audio.filename, 'at offset', offsetInMsecs)
             let player = this.players.get(board.audio.filename)
             if (player.state !== 'started') {

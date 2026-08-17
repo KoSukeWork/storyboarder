@@ -941,6 +941,29 @@ input[type=range]:focus::-webkit-slider-runnable-track {
   display:none
 }
 
+#scene-timeline-container .timeline-playhead {
+  width: 2px;
+  background-color: #d7d3ff;
+  box-shadow: 0 0 2px rgba(0, 0, 0, 0.7);
+  z-index: 20;
+}
+
+#scene-timeline-container .timeline-playhead__handle {
+  position: absolute;
+  top: 0;
+  left: -5px;
+  width: 0;
+  height: 0;
+  border-left: 6px solid transparent;
+  border-right: 6px solid transparent;
+  border-top: 7px solid #d7d3ff;
+}
+
+#scene-timeline-container .timeline-playhead--mini {
+  width: 1px;
+  background-color: rgba(215, 211, 255, 0.9);
+}
+
 #timeline-mode-control-view {
   font-size: 12px;
   line-height: 1;
