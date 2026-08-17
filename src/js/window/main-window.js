@@ -59,6 +59,7 @@ const boardModel = require('../models/board')
 const sceneModel = require('../models/scene')
 const {
   boardIndexAtTime,
+  boardTimelineDuration,
   insertionIndexAtTime,
   sceneBoundaryTimes,
   snapTimeToBoundary
@@ -632,8 +633,12 @@ const load = async (event, args) => {
           // sanity check
           if (!textInputMode) {
             // manually construct a new board
-            (shouldRenderThumbnailDrawer ? newBoard() : newBoardAtTimelineCursor())
+            (shouldRenderThumbnailDrawer ? newBoard() : requestNewBoardAtTimelineCursor())
               .then(index => {
+                // A second event path may observe the same in-flight Timeline
+                // command. It must not move the selection or report another
+                // creation when the guarded request returned no index.
+                if (index == null) return
                 // go to the board
                 gotoBoard(index)
                 // report
@@ -2279,7 +2284,10 @@ const setTimelineCursorTime = (time, { selectBoard = false } = {}) => {
 
   let duration = sceneModel.sceneDuration(boardData)
   let numericTime = Number(time)
-  if (!Number.isFinite(numericTime)) numericTime = 0
+  if (time == null || !Number.isFinite(numericTime)) {
+    let currentBoardTime = boardData.boards[currentBoard] && boardData.boards[currentBoard].time
+    numericTime = Number.isFinite(Number(currentBoardTime)) ? Number(currentBoardTime) : 0
+  }
   timelineCursorTimeInMsecs = Math.min(Math.max(Math.round(numericTime), 0), duration)
 
   if (sceneTimelineView) sceneTimelineView.setCursorTime(timelineCursorTimeInMsecs)
@@ -2455,13 +2463,47 @@ let newBoard = async (position, shouldAddToUndoStack = true) => {
 }
 
 const newBoardAtTimelineCursor = async () => {
-  let sceneDurationInMsecs = sceneModel.sceneDuration(boardData)
+  // Board times are derived from the current scene. Recalculate them before
+  // choosing a boundary so edits made since the last thumbnail render cannot
+  // make every insertion look like it belongs at index zero.
+  updateSceneTiming()
+
+  // Use the visual board timeline for insertion boundaries. The playback
+  // scene duration can be longer when a board's audio extends past its board
+  // duration, but that audio tail must not turn the board's start into the
+  // nearest insertion point.
+  let boardTimelineDurationInMsecs = boardTimelineDuration(
+    boardData,
+    board => boardModel.boardDuration(boardData, board)
+  )
   let insertionTime = snapTimeToBoundary(
     timelineCursorTimeInMsecs,
-    sceneBoundaryTimes(boardData, sceneDurationInMsecs)
+    sceneBoundaryTimes(boardData, boardTimelineDurationInMsecs)
   )
   let position = insertionIndexAtTime(boardData.boards, insertionTime)
-  return newBoard(position)
+  let index = await newBoard(position)
+
+  // `newBoard()` renders the thumbnail drawer and recalculates all board
+  // times. Use the resulting board time rather than the pre-insert boundary
+  // so the selection and session cursor stay in sync with the actual scene.
+  let insertedBoard = boardData.boards[index]
+  if (insertedBoard) setTimelineCursorTime(insertedBoard.time)
+
+  return index
+}
+
+// The same N key can arrive through before-input-event and the menu IPC
+// listener. Keep one in-flight operation and make duplicate callers a no-op.
+let timelineNewBoardCommandInProgress = false
+const requestNewBoardAtTimelineCursor = async () => {
+  if (timelineNewBoardCommandInProgress) return undefined
+
+  timelineNewBoardCommandInProgress = true
+  try {
+    return await newBoardAtTimelineCursor()
+  } finally {
+    timelineNewBoardCommandInProgress = false
+  }
 }
 
 // Called from "Import Images to New Boards…" or from window.ondrop
@@ -4996,6 +5038,30 @@ window.onkeydown = (e) => {
   if (!textInputMode) {
     // log.info('window.onkeydown', e)
 
+    // In Timeline mode, handle the New Board shortcut in the renderer as
+    // well as through the application menu. Some production Electron builds
+    // do not deliver `before-input-event` to the renderer, so relying on the
+    // menu IPC path alone makes `N` appear to do nothing. The request helper
+    // is guarded so a simultaneous menu accelerator does not create twice.
+    if (
+      !shouldRenderThumbnailDrawer &&
+      !e.shiftKey &&
+      !e.controlKey &&
+      !e.metaKey &&
+      !e.altKey &&
+      isCommandPressed('menu:boards:new-board')
+    ) {
+      e.preventDefault()
+      requestNewBoardAtTimelineCursor()
+        .then(index => {
+          if (index == null) return
+          gotoBoard(index)
+          ipcRenderer.send('analyticsEvent', 'Board', 'new')
+        })
+        .catch(err => log.error(err))
+      return
+    }
+
     if (isCommandPressed('drawing:marquee-mode')) {
       if (store.getState().toolbar.mode !== 'marquee') {
           store.dispatch({
@@ -5422,7 +5488,8 @@ ipcRenderer.on('newBoard', (event, args)=>{
   // TODO fix doubling bug https://github.com/wonderunit/storyboarder/issues/1206
   if (!textInputMode) {
     if (!shouldRenderThumbnailDrawer) {
-      newBoardAtTimelineCursor().then(index => {
+      requestNewBoardAtTimelineCursor().then(index => {
+        if (index == null) return
         gotoBoard(index)
         ipcRenderer.send('analyticsEvent', 'Board', 'new')
       }).catch(err => log.error(err))
@@ -5440,7 +5507,11 @@ ipcRenderer.on('newBoard', (event, args)=>{
       }).catch(err => log.error(err))
     }
   }
-  ipcRenderer.send('analyticsEvent', 'Board', 'new')
+  // Preserve the existing Boards-mode menu analytics behavior. Timeline
+  // commands report only from the operation that acquired the guard above.
+  if (shouldRenderThumbnailDrawer) {
+    ipcRenderer.send('analyticsEvent', 'Board', 'new')
+  }
 })
 
 ipcRenderer.on('openInEditor', (event, args)=>{

@@ -920,6 +920,12 @@ const createMenu = ({ store, send }) => {
   }
 
   const render = (context, event) => {
+    // i18next can emit languageChanged while the menu state machine is still
+    // in its initial state. Do not try to render a null template during that
+    // startup transition; the next setMenu/setWelcomeMenu event will render
+    // the correct menu.
+    if (!context.template || typeof templateFns[context.template] !== 'function') return
+
     Menu.setApplicationMenu(
       Menu.buildFromTemplate(
         templateFns[context.template](i18n)

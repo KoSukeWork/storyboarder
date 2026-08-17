@@ -881,6 +881,9 @@ app.on('ready', async () => {
 
 
   // setup the menu
+  const menuI18n = require('./services/i18next.config')
+  await menuI18n.ready
+  await menuI18n.changeLanguage(languageSettings.getSettingByKey('selectedLanguage') || 'en-US')
   createMenu({
     store,
     send: (event, ...rest) => menuBus.emit(event, event, ...rest)

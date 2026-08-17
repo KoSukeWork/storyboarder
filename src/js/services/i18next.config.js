@@ -2,6 +2,7 @@ let i18n = require('i18next')
 let i18nextBackend = require('i18next-fs-backend')
 const { app } = require('electron')
 const path = require('path')
+const fs = require('fs')
 const { initReactI18next } = require("react-i18next")
 const {settings:config} = require('./language.config')
 
@@ -14,7 +15,10 @@ const safeLanguageName = value => {
     return value
 }
 
-const loadPath = path.join(app.getAppPath(), 'src', 'js', 'locales')
+// Resolve bundled locales relative to this module. Electron test runners use
+// their own app path (and packaged builds may use an asar app path), so
+// app.getAppPath() is not a reliable source-root location here.
+const loadPath = path.join(__dirname, '..', 'locales')
 const userDataPath = app.getPath('userData')
 
 const getLoadPath = (lng, namespace) => {
@@ -23,7 +27,10 @@ const getLoadPath = (lng, namespace) => {
     const builtInLanguages = Array.isArray(config.getSettingByKey("builtInLanguages"))
         ? config.getSettingByKey("builtInLanguages")
         : []
-    if(builtInLanguages.some((item) => item && item.fileName === lng)) {
+    // This module is loaded by the menu before the ready handler has scanned
+    // and persisted builtInLanguages. Prefer an existing packaged locale even
+    // while that settings list is still empty.
+    if(builtInLanguages.some((item) => item && item.fileName === lng) || fs.existsSync(builtInPath)) {
         return builtInPath
     } else {
         return path.join(userDataPath, "locales", `${lng}.json`)
@@ -58,8 +65,13 @@ if(i18nextBackend.default) {
 }
 i18n.use(i18nextBackend).use(initReactI18next)
 
-if(!i18n.isInitialized) {
-    i18n.init(i18nextOptions)
-}
+const hasResources = i18n.services && i18n.services.resourceStore &&
+    i18n.services.resourceStore.data &&
+    Object.keys(i18n.services.resourceStore.data).length > 0
+const ready = !i18n.isInitialized || !hasResources
+    ? i18n.init(i18nextOptions)
+    : Promise.resolve(i18n)
+
+i18n.ready = Promise.resolve(ready)
 
 module.exports = i18n

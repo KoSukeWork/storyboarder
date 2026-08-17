@@ -9,7 +9,8 @@ const {
   sceneHasAudio,
   sceneBoundaryTimes,
   cursorTimeFromPointer,
-  boardIndexAtTime
+  boardIndexAtTime,
+  pointerXFromEvent
 } = require('../shared/helpers/timeline')
 
 // via https://webaudiodemos.appspot.com/AudioRecorder/js/audiodisplay.js
@@ -993,10 +994,16 @@ class TimelineView {
   setCursorFromPointer (event, shouldSelectBoard = true) {
     if (!this.refs || !this.refs.timelineScrollable) return
 
+    let pointerX = pointerXFromEvent(event)
+    // Pointer events from Electron and the browser do not expose the same
+    // coordinate property. Ignore malformed events so an existing cursor is
+    // preserved instead of being coerced to time zero.
+    if (!Number.isFinite(pointerX)) return
+
     let rect = this.refs.timelineScrollable.getBoundingClientRect()
     let sceneDuration = sceneModel.sceneDuration(this.scene)
     let time = cursorTimeFromPointer({
-      clientX: event.clientX,
+      clientX: pointerX,
       rectLeft: rect.left,
       scrollLeft: this.refs.timelineScrollable.scrollLeft,
       pixelsPerMsec: this.pixelsPerMsec,
@@ -1005,6 +1012,7 @@ class TimelineView {
       snap: !sceneHasAudio(this.scene),
       boundaries: sceneBoundaryTimes(this.scene, sceneDuration)
     })
+    if (!Number.isFinite(time)) return
 
     this.setCursorTime(time)
     this.onSetCursorTime && this.onSetCursorTime(time)
