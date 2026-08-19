@@ -94,6 +94,7 @@
       "delete-boards": "Delete Board(s)",
       "delete-boards-go-forward": "Delete Board(s) - Go Forward",
       "duplicate-board": "Duplicate Board",
+      "split-board": "Split Board",
       "reorder-left": "Reorder Left",
       "reorder-right": "Reorder Right",
       "add-audio-file": "Add Audio File…",
@@ -387,6 +388,12 @@
         "title": "Next Scene",
         "description": "If current board is at the start or end of the scene, this will jump forward one scene. Otherwise this will jump to the end of the current scene."
       }
+    },
+    "split-board": {
+      "timeline-only": "Split Board is available in Timeline mode. Switch to Timeline and place the playhead inside a board.",
+      "invalid-cursor": "Move the playhead inside a board to split it. Each half must be at least one frame long.",
+      "success": "Split board.",
+      "error": "Error: Could not split board."
     }
   },
   "shot-generator": {

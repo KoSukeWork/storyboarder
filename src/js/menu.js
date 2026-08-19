@@ -15,10 +15,14 @@ const setPrintProjectMenu = () =>
 const setEnableAudition = (value) =>
   ipcRenderer.send('menu:setEnableAudition', value)
 
+const setSplitBoardEnabled = (value) =>
+  ipcRenderer.send('menu:setSplitBoardEnabled', value)
+
 module.exports = {
   setWelcomeMenu,
   setShotGeneratorMenu,
   setMenu,
   setPrintProjectMenu,
-  setEnableAudition
+  setEnableAudition,
+  setSplitBoardEnabled
 }

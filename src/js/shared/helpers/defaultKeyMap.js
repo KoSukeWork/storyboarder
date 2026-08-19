@@ -50,6 +50,7 @@ const defaultKeyMap = {
   "menu:boards:delete-boards": "CommandOrControl+Backspace",
   "menu:boards:delete-boards-go-forward": "CommandOrControl+Delete",
   "menu:boards:duplicate": "d",
+  "menu:boards:split-board": "s",
   "menu:boards:reorder-left": "Alt+Left",
   "menu:boards:reorder-right": "Alt+Right",
   "menu:boards:toggle-new-shot": "/",

@@ -395,6 +395,15 @@ const createMenu = ({ store, send }) => {
         }
       },
       {
+        id: 'boards.split-board',
+        accelerator: keystrokeFor('menu:boards:split-board'),
+        label: i18n.t('menu.boards.split-board'),
+        enabled: false,
+        click (item, focusedWindow, event) {
+          send('splitBoard')
+        }
+      },
+      {
         type: 'separator'
       },
       {
@@ -931,13 +940,18 @@ const createMenu = ({ store, send }) => {
         templateFns[context.template](i18n)
       )
     )
+
+    let splitItem = Menu.getApplicationMenu() &&
+      Menu.getApplicationMenu().getMenuItemById('boards.split-board')
+    if (splitItem) splitItem.enabled = context.splitBoardEnabled === true
   }
 
   const machine = createMachine({
     id: 'menu',
     initial: 'init',
     context: {
-      template: null
+      template: null,
+      splitBoardEnabled: false
     },
     states: {
       init: {},
@@ -980,7 +994,17 @@ const createMenu = ({ store, send }) => {
       'setMenu': 'mainWindow',
       'setPrintProjectMenu': 'printProject',
 
-      'languageChanged': { actions: render }
+      'languageChanged': { actions: render },
+      'setSplitBoardEnabled': {
+        actions: [
+          assign({ splitBoardEnabled: (context, event) => event.value === true }),
+          (context, event) => {
+            let menu = Menu.getApplicationMenu()
+            let item = menu && menu.getMenuItemById('boards.split-board')
+            if (item) item.enabled = event.value === true
+          }
+        ]
+      }
     }
   })
   const service = interpret(machine).start()
@@ -990,6 +1014,7 @@ const createMenu = ({ store, send }) => {
   ipcMain.on('menu:setPrintProjectMenu', (event) => service.send('setPrintProjectMenu'))
 
   ipcMain.on('menu:setEnableAudition', (event, value) => service.send('setEnableAudition', { value: value === true }))
+  ipcMain.on('menu:setSplitBoardEnabled', (event, value) => service.send('setSplitBoardEnabled', { value: value === true }))
 
   // when renderer language changes …
   ipcMain.on('languageChanged', async (event, lng) => {

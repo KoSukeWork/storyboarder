@@ -148,4 +148,52 @@ describe('timeline helpers', () => {
       scene.boards.length
     )
   })
+
+  describe('#splitBoardAtTime', () => {
+    const timedBoards = [
+      { time: 0, duration: 2000 },
+      { time: 2000, duration: 3000 },
+      { time: 5000, duration: 2000 }
+    ]
+    const minDuration = Math.round(1000 / 24)
+
+    it('splits a board at the exact cursor time without snapping', () => {
+      const split = timeline.splitBoardAtTime(timedBoards, 3500, { minDuration })
+      assert.deepStrictEqual(split, {
+        index: 1,
+        firstDuration: 1500,
+        secondDuration: 1500
+      })
+      assert.strictEqual(split.firstDuration + split.secondDuration, timedBoards[1].duration)
+      assert.strictEqual(timedBoards[split.index].time + split.firstDuration, 3500)
+    })
+
+    it('fails at a board start, end, or outside the scene', () => {
+      assert.strictEqual(timeline.splitBoardAtTime(timedBoards, 2000, { minDuration }), null)
+      assert.strictEqual(timeline.splitBoardAtTime(timedBoards, 5000, { minDuration }), null)
+      assert.strictEqual(timeline.splitBoardAtTime(timedBoards, 7000, { minDuration }), null)
+      assert.strictEqual(timeline.splitBoardAtTime(timedBoards, -1, { minDuration }), null)
+    })
+
+    it('fails when either half would be shorter than one frame', () => {
+      assert.strictEqual(timeline.splitBoardAtTime(timedBoards, 2000 + minDuration - 1, { minDuration }), null)
+      assert.strictEqual(timeline.splitBoardAtTime(timedBoards, 5000 - minDuration + 1, { minDuration }), null)
+    })
+
+    it('uses getDuration for boards without an explicit duration', () => {
+      const boards = [
+        { time: 0 },
+        { time: 2000 }
+      ]
+      const split = timeline.splitBoardAtTime(boards, 800, {
+        getDuration: () => 2000,
+        minDuration
+      })
+      assert.deepStrictEqual(split, {
+        index: 0,
+        firstDuration: 800,
+        secondDuration: 1200
+      })
+    })
+  })
 })

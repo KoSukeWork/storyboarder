@@ -11,6 +11,7 @@ const SEND_CHANNELS = new Set([
   'goPreviousScene', 'importImagesDialogue', 'languageChanged', 'languageModified',
   'languageAdded', 'languageRemoved', 'log', 'openDialogue', 'openFile',
   'menu:setEnableAudition', 'menu:setMenu', 'menu:setPrintProjectMenu', 'menu:setWelcomeMenu',
+  'menu:setSplitBoardEnabled',
   'openLanguagePreferences', 'openNewWindow', 'playsfx', 'preventSleep',
   'prefs:change', 'registration:open', 'resumeSleep', 'test', 'textInputMode',
   'workspaceReady', 'printWorksheet:getProjectData-response', 'mainWindow:fs-sync',
@@ -20,7 +21,7 @@ const SEND_CHANNELS = new Set([
 
 const EVENT_CHANNELS = new Set([
   'addAudioFile', 'brushSize', 'clear', 'copy', 'cycleViewMode', 'deleteBoards',
-  'devtools-closed', 'devtools-focused', 'duplicateBoard', 'exportAnimatedGif',
+  'devtools-closed', 'devtools-focused', 'duplicateBoard', 'splitBoard', 'exportAnimatedGif',
   'exportCleanup', 'exportFcp', 'exportImages', 'exportPDF:getProjectData-request',
   'exportVideo', 'exportWeb', 'exportZIP', 'flipBoard', 'focus', 'goNextBoard',
   'goPreviousBoard', 'importImage', 'importImageAndReplace', 'importNotification',

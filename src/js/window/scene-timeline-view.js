@@ -607,7 +607,9 @@ class BoardView {
       let canvas = this.refs.canvas
       let context = canvas.getContext('2d')
 
-      let data = this.getAudioBufferByFilename(this.board.audio.filename).getChannelData(0)
+      const buffer = this.getAudioBufferByFilename(this.board.audio.filename)
+      if (!buffer || typeof buffer.getChannelData !== 'function') return
+      let data = buffer.getChannelData(0)
       context.fillStyle = '#7c7'
       drawBuffer(context.canvas.width, context.canvas.height, context, data)
     }

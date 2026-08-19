@@ -63,7 +63,8 @@ const {
   boardTimelineDuration,
   insertionIndexAtTime,
   sceneBoundaryTimes,
-  snapTimeToBoundary
+  snapTimeToBoundary,
+  splitBoardAtTime
 } = require('../shared/helpers/timeline')
 const watermarkModel = require('../models/watermark')
 
@@ -116,6 +117,7 @@ i18n.on('loaded', (loaded) => {
 const changeLanguage = (lng) => {
   if(remote.getCurrentWindow().isFocused()) {
     menu.setMenu(i18n)
+    syncSplitBoardMenuEnabled()
   }
   ipcRenderer.send("languageChanged", lng)
 }
@@ -553,6 +555,7 @@ remote.getCurrentWindow().on('focus', () => {
 ///////////////////////////////////////////////////////////////
 
 const load = async (event, args) => {
+  log.info('main-window received load', args && args[0])
   try {
     if (args[1]) {
       logToView({ type: 'progress', message: 'Loading Project with Script' })
@@ -615,7 +618,10 @@ const load = async (event, args) => {
     ///////////////////////////////////////////////////////////////
 
     await verifyScene()
-    await renderScene()
+    // Large audio files decode on the renderer thread and would otherwise
+    // keep the loading overlay up until decode finishes.  Show the workspace
+    // first, then let buffers arrive in the background.
+    await renderScene({ waitForAudio: false })
 
     logToView({ type: 'progress', message: 'Preparing to display' })
 
@@ -663,6 +669,22 @@ const load = async (event, args) => {
         }
 
         // keyUp AND keyDown cause menu to be ignored and key to be trapped
+        win.webContents.setIgnoreMenuShortcuts(true)
+        event.preventDefault()
+        return
+      }
+
+      if (!shouldRenderThumbnailDrawer && isCommandPressed('menu:boards:split-board', pressedKeys)) {
+        if (input.type == 'keyDown' && !textInputMode) {
+          requestSplitBoardAtTimelineCursor()
+            .then(index => {
+              if (index == null) return
+              gotoBoard(index, false, { preserveTimelineCursor: true })
+              ipcRenderer.send('analyticsEvent', 'Board', 'split')
+            })
+            .catch(err => log.error(err))
+        }
+
         win.webContents.setIgnoreMenuShortcuts(true)
         event.preventDefault()
         return
@@ -2041,7 +2063,10 @@ const loadBoardUI = async () => {
   audioPlayback = new AudioPlayback({
     store,
     sceneData: boardData,
-    getAudioFilePath: (filename) => safeMediaPath(filename)
+    getAudioFilePath: (filename) => {
+      const mediaPath = safeMediaPath(filename)
+      return mediaPath ? mediaUrlForPath(mediaPath) : null
+    }
   })
   audioFileControlView = new AudioFileControlView({
     // onSelectFile = via drop
@@ -2281,6 +2306,7 @@ const loadBoardUI = async () => {
   })
 
   menu.setMenu(i18n)
+  syncSplitBoardMenuEnabled()
   // HACK initialize the menu to match the value in preferences
   audioPlayback.setEnableAudition(prefsModule.getPrefs().enableBoardAudition)
 
@@ -2316,13 +2342,16 @@ const setTimelineCursorTime = (time, { selectBoard = false } = {}) => {
 }
 
 // whenever the scene changes
-const renderScene = async () => {
+const renderScene = async ({ waitForAudio = true } = {}) => {
   audioPlayback.setSceneData(boardData)
   audioPlayback.resetBuffers()
 
-  const { failed } = await audioPlayback.updateBuffers()
-  failed.forEach(filename => notifications.notify({ message: `Could not load audio file ${filename}` }))
-  updateAudioDurations()
+  const audioPromise = audioPlayback.updateBuffers().then(({ failed }) => {
+    failed.forEach(filename => notifications.notify({ message: `Could not load audio file ${filename}` }))
+    updateAudioDurations()
+    if (sceneTimelineView) renderSceneTimeline()
+  })
+  if (waitForAudio) await audioPromise
 
   if (boardData.boards[currentBoard]) {
     setTimelineCursorTime(boardData.boards[currentBoard].time)
@@ -3548,6 +3577,66 @@ let deleteBoards = (args)=> {
   return numDeleted
 }
 
+const copyBoardMediaFiles = (boardSrc, boardDst) => {
+  let filePairs = boardSrc.layers
+    ? Object.keys(boardSrc.layers)
+      .map(name =>
+        ({
+          from: boardSrc.layers[name].url,
+          to: boardDst.layers[name].url
+        }))
+    : []
+
+  filePairs.push({
+    from: boardModel.boardFilenameForThumbnail(boardSrc),
+    to: boardModel.boardFilenameForThumbnail(boardDst)
+  })
+
+  filePairs.push({
+    from: boardModel.boardFilenameForPosterFrame(boardSrc),
+    to: boardModel.boardFilenameForPosterFrame(boardDst)
+  })
+
+  if (boardSrc.link) {
+    filePairs.push({
+      from: boardSrc.link,
+      to: boardModel.boardFilenameForLink(boardDst)
+    })
+  }
+
+  filePairs = filePairs.map(filePair => ({
+    from: safeMediaPath(filePair.from),
+    to: safeMediaPath(filePair.to, { forWrite: true })
+  })).filter(filePair => filePair.from && filePair.to)
+
+  for (let { from } of filePairs) {
+    if (!fs.existsSync(from)) {
+      log.error('Could not find', from)
+      throw new Error('Could not find', from)
+    }
+  }
+
+  for (let { from, to } of filePairs) {
+    fs.writeFileSync(to, fs.readFileSync(from))
+  }
+}
+
+const insertCopiedBoardAt = (boardSrc, insertAt, { duration } = {}) => {
+  let boardDst = migrateBoards([util.stringifyClone(boardSrc)], insertAt)[0]
+
+  // Per Taino's request, we are not duplicating some metadata
+  boardDst.audio = null
+  boardDst.newShot = false
+  boardDst.dialogue = ''
+  boardDst.action = ''
+  boardDst.notes = ''
+  boardDst.duration = duration === undefined ? boardSrc.duration : duration
+
+  copyBoardMediaFiles(boardSrc, boardDst)
+  boardData.boards.splice(insertAt, 0, boardDst)
+  return boardDst
+}
+
 /**
  * duplicateBoard
  *
@@ -3566,74 +3655,9 @@ let duplicateBoard = async () => {
 
   let insertAt = currentBoard + 1
   let boardSrc = boardData.boards[currentBoard]
-  let boardDst = migrateBoards([util.stringifyClone(boardSrc)], insertAt)[0]
-
-  // Per Taino's request, we are not duplicating some metadata
-
-  boardDst.audio = null
-  boardDst.newShot = false
-  boardDst.dialogue = ''
-  boardDst.action = ''
-  boardDst.notes = ''
-  boardDst.duration = boardSrc.duration // either `undefined` or a value in msecs
 
   try {
-    // log.info('copying files from index', currentBoard, 'to index', insertAt)
-
-    // every layer
-    let filePairs = boardSrc.layers
-      ? Object.keys(boardSrc.layers)
-        .map(name =>
-          ({
-            from: boardSrc.layers[name].url,
-            to: boardDst.layers[name].url
-          }))
-      : []
-
-    // thumbnail
-    filePairs.push({
-      from: boardModel.boardFilenameForThumbnail(boardSrc),
-      to: boardModel.boardFilenameForThumbnail(boardDst)
-    })
-
-    // posterframe
-    filePairs.push({
-      from: boardModel.boardFilenameForPosterFrame(boardSrc),
-      to: boardModel.boardFilenameForPosterFrame(boardDst)
-    })
-
-    // is there an existing link?
-    if (boardSrc.link) {
-      // make a copy with the new name
-      filePairs.push({
-        from: boardSrc.link,
-        to: boardModel.boardFilenameForLink(boardDst)
-      })
-    }
-
-    // NOTE: audio is not copied
-
-    // absolute paths
-    filePairs = filePairs.map(filePair => ({
-      from: safeMediaPath(filePair.from),
-      to: safeMediaPath(filePair.to, { forWrite: true })
-    })).filter(filePair => filePair.from && filePair.to)
-
-    for (let { from, to } of filePairs) {
-      // log.info('duplicate', path.basename(from), 'to', path.basename(to))
-      if (!fs.existsSync(from)) {
-        log.error('Could not find', from)
-        throw new Error('Could not find', from)
-      }
-    }
-
-    for (let { from, to } of filePairs) {
-      // log.info('duplicate is copying from', from, 'to', to)
-      fs.writeFileSync(to, fs.readFileSync(from))
-    }
-
-    // insert data
-    boardData.boards.splice(insertAt, 0, boardDst)
+    insertCopiedBoardAt(boardSrc, insertAt)
     markBoardFileDirty()
     storeUndoStateForScene()
 
@@ -3651,6 +3675,99 @@ let duplicateBoard = async () => {
     notifications.notify({ message: 'Error: Could not duplicate board.', timing: 5 })
     throw new Error(err)
   }
+}
+
+const minBoardDurationInMsecs = () => {
+  let fps = Number(boardData && boardData.fps)
+  return Math.round(1000 / (Number.isFinite(fps) && fps > 0 ? fps : 24))
+}
+
+const splitBoardAtTimelineCursor = async () => {
+  if (shouldRenderThumbnailDrawer) {
+    notifications.notify({
+      message: i18n.t('main-window.split-board.timeline-only'),
+      timing: 5
+    })
+    return undefined
+  }
+
+  if (storyboarderSketchPane && storyboarderSketchPane.getIsDrawingOrStabilizing()) {
+    sfx.error()
+    return Promise.reject('not ready')
+  }
+
+  if (isSavingImageFile) {
+    sfx.error()
+    return Promise.reject('not ready')
+  }
+
+  updateSceneTiming()
+
+  let split = splitBoardAtTime(
+    boardData.boards,
+    timelineCursorTimeInMsecs,
+    {
+      getDuration: board => boardModel.boardDuration(boardData, board),
+      minDuration: minBoardDurationInMsecs()
+    }
+  )
+
+  if (!split) {
+    notifications.notify({
+      message: i18n.t('main-window.split-board.invalid-cursor'),
+      timing: 5
+    })
+    sfx.error()
+    return undefined
+  }
+
+  await saveImageFile()
+  storeUndoStateForScene(true)
+
+  let boardSrc = boardData.boards[split.index]
+  let cursorTime = timelineCursorTimeInMsecs
+  let originalDuration = boardSrc.duration
+
+  try {
+    boardSrc.duration = split.firstDuration
+    insertCopiedBoardAt(boardSrc, split.index + 1, { duration: split.secondDuration })
+    markBoardFileDirty()
+    renderThumbnailDrawer()
+    setTimelineCursorTime(cursorTime)
+    storeUndoStateForScene()
+
+    sfx.down(-1, 2)
+    notifications.notify({
+      message: i18n.t('main-window.split-board.success'),
+      timing: 5
+    })
+
+    return split.index + 1
+  } catch (err) {
+    boardSrc.duration = originalDuration
+    log.error(err)
+    notifications.notify({
+      message: i18n.t('main-window.split-board.error'),
+      timing: 5
+    })
+    throw err
+  }
+}
+
+let timelineSplitBoardCommandInProgress = false
+const requestSplitBoardAtTimelineCursor = async () => {
+  if (timelineSplitBoardCommandInProgress) return undefined
+
+  timelineSplitBoardCommandInProgress = true
+  try {
+    return await splitBoardAtTimelineCursor()
+  } finally {
+    timelineSplitBoardCommandInProgress = false
+  }
+}
+
+function syncSplitBoardMenuEnabled () {
+  menu.setSplitBoardEnabled(!shouldRenderThumbnailDrawer)
 }
 
 /**
@@ -5082,6 +5199,25 @@ window.onkeydown = (e) => {
       return
     }
 
+    if (
+      !shouldRenderThumbnailDrawer &&
+      !e.shiftKey &&
+      !e.controlKey &&
+      !e.metaKey &&
+      !e.altKey &&
+      isCommandPressed('menu:boards:split-board')
+    ) {
+      e.preventDefault()
+      requestSplitBoardAtTimelineCursor()
+        .then(index => {
+          if (index == null) return
+          gotoBoard(index, false, { preserveTimelineCursor: true })
+          ipcRenderer.send('analyticsEvent', 'Board', 'split')
+        })
+        .catch(err => log.error(err))
+      return
+    }
+
     if (isCommandPressed('drawing:marquee-mode')) {
       if (store.getState().toolbar.mode !== 'marquee') {
           store.dispatch({
@@ -5496,6 +5632,7 @@ const renderViewMode = () => {
 
 const toggleTimeline = () => {
   shouldRenderThumbnailDrawer = !shouldRenderThumbnailDrawer
+  syncSplitBoardMenuEnabled()
   // renderTimelineModeControlView({
   //   mode: shouldRenderThumbnailDrawer
   //     ? 'sequence'
@@ -6883,10 +7020,12 @@ const TimelineModeControlView = ({ mode = 'sequence', show = false }) => {
 
   const onBoardsSelect = () => {
     shouldRenderThumbnailDrawer = false
+    syncSplitBoardMenuEnabled()
     renderThumbnailDrawer()
   }
   const onTimelineSelect = () => {
     shouldRenderThumbnailDrawer = true
+    syncSplitBoardMenuEnabled()
     renderThumbnailDrawer()
   }
 
@@ -6990,6 +7129,18 @@ ipcRenderer.on('duplicateBoard', (event, args)=>{
       .then(index => {
         gotoBoard(index)
         ipcRenderer.send('analyticsEvent', 'Board', 'duplicate')
+      })
+      .catch(err => log.error(err))
+  }
+})
+
+ipcRenderer.on('splitBoard', () => {
+  if (!textInputMode) {
+    requestSplitBoardAtTimelineCursor()
+      .then(index => {
+        if (index == null) return
+        gotoBoard(index, false, { preserveTimelineCursor: true })
+        ipcRenderer.send('analyticsEvent', 'Board', 'split')
       })
       .catch(err => log.error(err))
   }

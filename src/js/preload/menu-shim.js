@@ -7,5 +7,6 @@ module.exports = {
   setMainMenu: () => sendMenuEvent('menu:setMenu'),
   setPrintProjectMenu: () => sendMenuEvent('menu:setPrintProjectMenu'),
   setEnableAudition: value => sendMenuEvent('menu:setEnableAudition', Boolean(value)),
+  setSplitBoardEnabled: value => sendMenuEvent('menu:setSplitBoardEnabled', Boolean(value)),
   send: (channel, ...args) => bridge.ipc.send(channel, ...args)
 }

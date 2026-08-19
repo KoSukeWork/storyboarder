@@ -57,7 +57,11 @@ const options = {
   loader: { '.js': 'jsx', '.json': 'json' },
   legalComments: 'none',
   minify: false,
-  sourcemap: false
+  sourcemap: false,
+  // regenerator-runtime assigns an undeclared global, then falls back to
+  // Function() when that throws in the IIFE's strict mode. CSP script-src
+  // 'self' blocks that eval and aborts the whole bundle before load.
+  banner: { js: 'var regeneratorRuntime;' }
 }
 
 const run = process.argv.includes('--watch')

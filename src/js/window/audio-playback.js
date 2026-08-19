@@ -138,6 +138,25 @@ class AudioPlayback {
       if (remaining === 0) {
         resolve({ failed })
       } else {
+        // Isolated renderer + CSP cannot load file:// audio. A hung XHR would
+        // otherwise leave the loading overlay up forever.
+        const timeoutId = setTimeout(() => {
+          if (remaining === 0) return
+          for (let filename of loadables) {
+            if (!failed.includes(filename)) failed.push(filename)
+          }
+          remaining = 0
+          checkDone()
+        }, 30000)
+
+        const finish = checkDone
+        checkDone = () => {
+          if (remaining === 0) {
+            clearTimeout(timeoutId)
+            finish()
+          }
+        }
+
         for (let filepath of loadables) {
           const source = this.getAudioFilePath(filepath)
           if (!source) {

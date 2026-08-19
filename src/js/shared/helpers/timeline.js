@@ -107,6 +107,32 @@ const insertionIndexAtTime = (boards, time) => {
   return index === -1 ? boards.length : index
 }
 
+// Split a board at an exact cursor time. Do not snap to board boundaries:
+// a snapped time would always land on a start/end and never split.
+const splitBoardAtTime = (boards, time, { getDuration, minDuration } = {}) => {
+  if (!Array.isArray(boards) || boards.length === 0) return null
+  if (!Number.isFinite(time)) return null
+
+  let min = Number.isFinite(minDuration) && minDuration > 0 ? Math.round(minDuration) : 1
+  let index = boardIndexAtTime(boards, time)
+  if (index < 0) return null
+
+  let board = boards[index]
+  let start = Number(board && board.time)
+  if (!Number.isFinite(start)) return null
+
+  let duration = typeof getDuration === 'function'
+    ? Number(getDuration(board, index))
+    : Number(board && board.duration)
+  if (!Number.isFinite(duration) || duration <= 0) return null
+
+  let firstDuration = Math.round(time - start)
+  let secondDuration = Math.round(duration - firstDuration)
+  if (firstDuration < min || secondDuration < min) return null
+
+  return { index, firstDuration, secondDuration }
+}
+
 module.exports = {
   sceneHasAudio,
   sceneBoundaryTimes,
@@ -115,5 +141,6 @@ module.exports = {
   snapTimeToBoundary,
   cursorTimeFromPointer,
   boardIndexAtTime,
-  insertionIndexAtTime
+  insertionIndexAtTime,
+  splitBoardAtTime
 }

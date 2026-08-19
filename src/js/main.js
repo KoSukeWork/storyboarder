@@ -1915,6 +1915,12 @@ let loadStoryboarderWindow = (filename, scriptData, locations, characters, board
     const safeSource = typeof source === 'string' ? source.slice(0, 4096) : ''
     onErrorInWindow(event, safeMessage, safeSource, Number(lineno) || 0, Number(colno) || 0)
   })
+  mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription, validatedURL) => {
+    log.error('main-window did-fail-load', errorCode, errorDescription, validatedURL)
+  })
+  mainWindow.webContents.on('render-process-gone', (event, details) => {
+    log.error('main-window render-process-gone', details)
+  })
   mainWindow.loadURL(`file://${__dirname}/../main-window.html`)
   mainWindow.webContents.once('did-finish-load', () => {
     mainWindow.webContents.send('load', [filename, scriptData, locations, characters, boardSettings, currentPath])
@@ -2073,6 +2079,10 @@ menuBus.on('deleteBoards', (e, arg)=> {
 
 menuBus.on('duplicateBoard', (e, arg)=> {
   mainWindow.webContents.send('duplicateBoard')
+})
+
+menuBus.on('splitBoard', () => {
+  mainWindow.webContents.send('splitBoard')
 })
 
 menuBus.on('reorderBoardsLeft', (e, arg)=> {

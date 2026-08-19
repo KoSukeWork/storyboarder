@@ -94,6 +94,7 @@
       "delete-boards": "删除绘板",
       "delete-boards-go-forward": "前向删除绘板",
       "duplicate-board": "复制绘板",
+      "split-board": "分割绘板",
       "reorder-left": "左侧重新排序",
       "reorder-right": "右侧重新排序",
       "add-audio-file": "添加音频文件...",
@@ -387,6 +388,12 @@
         "title": "下一个场景",
         "description": "如果当前绘板位于场景的开始或结尾，将会向后一个场景。 否则，它将跳转到当前场景的结尾。"
       }
+    },
+    "split-board": {
+      "timeline-only": "分割绘板仅在时间轴模式下可用。请切换到时间轴，并把光标放在绘板内部。",
+      "invalid-cursor": "请把时间轴光标移到绘板内部再分割。每一段至少要有一帧。",
+      "success": "已分割绘板。",
+      "error": "错误：无法分割绘板。"
     }
   },
   "shot-generator": {
