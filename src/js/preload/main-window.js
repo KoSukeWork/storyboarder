@@ -14,7 +14,8 @@ const SEND_CHANNELS = new Set([
   'openLanguagePreferences', 'openNewWindow', 'playsfx', 'preventSleep',
   'prefs:change', 'registration:open', 'resumeSleep', 'test', 'textInputMode',
   'workspaceReady', 'printWorksheet:getProjectData-response', 'mainWindow:fs-sync',
-  'mainWindow:window-action', 'mainWindow:clipboard-write', 'mainWindow:native-image'
+  'mainWindow:window-action', 'mainWindow:clipboard-write', 'mainWindow:native-image',
+  'mcp:response', 'mcp:changed'
 ])
 
 const EVENT_CHANNELS = new Set([
@@ -31,13 +32,13 @@ const EVENT_CHANNELS = new Set([
   'toggleGuide', 'toggleNewShot', 'toggleOnionSkin', 'togglePlayback', 'toggleSpeaking',
   'toggleTimeline', 'undo', 'useColor', 'zoomReset', 'exportPrintableWorksheetPdf',
   'addAudioFile', 'printWorksheet:getProjectData-request', 'mainWindow:resize',
-  'previousScene', 'nextScene'
+  'previousScene', 'nextScene', 'mcp:request'
 ])
 
 const INVOKE_CHANNELS = new Set([
   'mainWindow:dialog', 'mainWindow:prefs', 'mainWindow:clipboard-read',
   'mainWindow:native-image-read', 'mainWindow:window', 'mainWindow:project', 'mainWindow:process',
-  'mainWindow:auth', 'mainWindow:upload-web'
+  'mainWindow:auth', 'mainWindow:upload-web', 'mcp:export-pdf'
 ])
 
 const assertChannel = (set, channel) => {

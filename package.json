@@ -168,6 +168,7 @@
   },
   "dependencies": {
     "@electron/remote": "^2.0.4",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "@redux-devtools/extension": "^3.2.2",
     "@thi.ng/geom": "3.1.7",
     "@thi.ng/vectors": "7.4.3",

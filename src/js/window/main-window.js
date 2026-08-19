@@ -57,6 +57,7 @@ const sceneSettingsView = require('./scene-settings-view')
 
 const boardModel = require('../models/board')
 const sceneModel = require('../models/scene')
+const shotListModel = require('../models/shot-list')
 const {
   boardIndexAtTime,
   boardTimelineDuration,
@@ -70,6 +71,7 @@ const AudioPlayback = require('./audio-playback')
 const AudioFileControlView = require('./audio-file-control-view')
 
 const LinkedFileManager = require('./linked-file-manager')
+const { createMcpAdapter } = require('./mcp-adapter')
 
 const getIpAddress = require('../utils/getIpAddress')
 const {
@@ -270,6 +272,16 @@ let characters
 let boardSettings
 let currentPath
 let currentScene = 0
+let mcpRevision = 0
+let mcpChangedNotificationTimer
+
+const scheduleMcpChanged = () => {
+  clearTimeout(mcpChangedNotificationTimer)
+  mcpChangedNotificationTimer = setTimeout(() => {
+    mcpChangedNotificationTimer = undefined
+    ipcRenderer.send('mcp:changed')
+  }, 250)
+}
 
 const MAX_PROJECT_TEXT_LENGTH = 256 * 1024
 const clampNumber = (value, fallback, min, max) => {
@@ -588,6 +600,8 @@ const load = async (event, args) => {
       }
     }
 
+    mcpRevision++
+    scheduleMcpChanged()
     migrateScene()
 
     await loadBoardUI()
@@ -2640,6 +2654,8 @@ const updateAudioDurations = () => {
 
 let markBoardFileDirty = () => {
   boardFileDirty = true
+  mcpRevision++
+  scheduleMcpChanged()
   clearTimeout(boardFileDirtyTimer)
   boardFileDirtyTimer = setTimeout(saveBoardFile, 5000)
 }
@@ -2677,6 +2693,8 @@ let saveBoardFile = (opt = { force: false }) => {
 }
 
 let markImageFileDirty = layerIndices => {
+  mcpRevision++
+  scheduleMcpChanged()
   // force update layers dirty flag
   storyboarderSketchPane.markLayersDirty(layerIndices)
 
@@ -4942,6 +4960,8 @@ let loadScene = async (sceneNumber) => {
   }
 
   if (boardFilename) {
+    mcpRevision++
+    scheduleMcpChanged()
     boardPath = path.dirname(boardFilename)
     log.info('BOARD PATH:', boardPath)
 
@@ -6257,7 +6277,7 @@ const insertBoards = async (dest, insertAt, boards, { layerDataByBoardIndex }) =
   }
 }
 
-const fitImageData = async (boardSize, imageData) => {
+const fitImageData = async (boardSize, imageData, options = {}) => {
   let image = await exporterCommon.getImage(imageData)
 
   // if ratio matches,
@@ -6265,7 +6285,8 @@ const fitImageData = async (boardSize, imageData) => {
   // just return original image data
   if (
     image.width === boardSize[0] &&
-    image.height === boardSize[1]
+    image.height === boardSize[1] &&
+    options.forcePng !== true
   ) {
     return imageData
   } else {
@@ -7202,6 +7223,151 @@ ipcRenderer.on('exportPDF:getProjectData-request', (event, ...args) => {
     currentStoryboarderFilePath: boardFilename,
     currentBoardData: boardData
   })
+})
+
+const mcpAdapter = createMcpAdapter({
+  appVersion: pkg.version,
+  getBoardData: () => boardData,
+  setBoardData: value => { boardData = value },
+  getRevision: () => mcpRevision,
+  getCurrentBoardIndex: () => currentBoard,
+  setCurrentBoardIndex: index => {
+    if (!Number.isFinite(Number(index))) return
+    currentBoard = Math.max(0, Math.min(boardData && boardData.boards ? boardData.boards.length - 1 : 0, Math.floor(Number(index))))
+  },
+  getSelectedBoardIndices: () => Array.from(selections),
+  getDirtyState: () => {
+    const imageDirty = Boolean(storyboarderSketchPane && storyboarderSketchPane.visibleLayersIndices &&
+      storyboarderSketchPane.visibleLayersIndices.some(index => storyboarderSketchPane.getLayerDirty(index)))
+    return { project: Boolean(boardFileDirty), image: imageDirty, any: Boolean(boardFileDirty || imageDirty) }
+  },
+  getCurrentSceneIndex: () => currentScene,
+  getCurrentSceneInfo: () => {
+    const scene = getSceneObjectByIndex(currentScene)
+    return scene
+      ? { sceneId: scene.scene_id, number: scene.scene_number, slugline: normalizeText(scene.slugline), synopsis: normalizeText(scene.synopsis) }
+      : { sceneId: null, number: null, slugline: null, synopsis: null }
+  },
+  getScriptData: () => scriptData,
+  getScriptFilePath: () => scriptFilePath,
+  getLocations: () => locations,
+  getCharacters: () => characters,
+  getProjectBaseName: () => path.basename(boardFilename || scriptFilePath || 'project', path.extname(boardFilename || scriptFilePath || '')),
+  getBoardFilename: () => boardFilename,
+  getProjectRoot: () => path.dirname(scriptFilePath || boardFilename),
+  safeMediaPath,
+  insertNewBoardDataAtPosition,
+  savePosterFrame,
+  saveThumbnailFile,
+  saveDataURLtoFile,
+  fitImageData,
+  getCanvasSize: () => storyboarderSketchPane.getCanvasSize(),
+  saveCurrentImageIfNeeded: async board => {
+    if (boardData && boardData.boards.indexOf(board) === currentBoard) await saveImageFile()
+  },
+  saveImageFile,
+  saveBoardFile,
+  storeUndoStateForScene,
+  markBoardFileDirty,
+  updateSceneTiming,
+  renderThumbnailDrawer,
+  renderMetaData,
+  refreshAfterMcpChange: async () => {
+    renderThumbnailDrawer()
+    await gotoBoard(Math.min(currentBoard, Math.max(0, boardData.boards.length - 1)), true)
+  },
+  notifyChanged: scheduleMcpChanged,
+  getShotList: scope => {
+    try {
+      const value = scope === 'project' && scriptFilePath
+        ? shotListModel.getShotListForProject(scriptFilePath)
+        : shotListModel.getShotListForScene(boardData)
+      return { ok: true, revision: mcpRevision, ...value }
+    } catch (error) {
+      return { ok: false, code: 'VALIDATION_FAILED', message: error.message }
+    }
+  },
+  exportZip: async () => {
+    if (!boardFilename) throw new Error('No Storyboarder project is open')
+    await saveImageFile()
+    saveBoardFile({ force: true })
+    const sourcePath = scriptFilePath || boardFilename
+    const exportsPath = exporterCommon.ensureExportsPathExists(boardFilename)
+    const basename = path.basename(sourcePath, path.extname(sourcePath)).replace(/[^A-Za-z0-9._-]+/g, '-').slice(0, 100) || 'storyboard'
+    const filename = `${basename}-${dayjs().format('YYYY-MM-DD-HH.mm.ss')}.zip`
+    const outputPath = resolveForWriteInside(exportsPath, filename)
+    const result = await exporterArchive.exportAsZIP(sourcePath, outputPath)
+    const missing = Array.isArray(result && result.missing)
+      ? result.missing.slice(0, 1000).map(value => {
+        const relative = path.relative(path.dirname(sourcePath), String(value || ''))
+        return relative && !relative.startsWith('..') && !path.isAbsolute(relative) ? relative.replace(/\\/g, '/') : path.basename(String(value || ''))
+      })
+      : []
+    return {
+      outputPath: path.relative(path.dirname(sourcePath), outputPath),
+      missing
+    }
+  },
+  exportPdf: async () => {
+    const result = await window.storyboarderMain.ipc.invoke('mcp:export-pdf')
+    if (!result || result.ok !== true) {
+      const error = new Error(result && result.message ? result.message : 'Could not export PDF')
+      error.code = result && result.code ? result.code : 'VALIDATION_FAILED'
+      throw error
+    }
+    return { outputPath: result.outputPath }
+  },
+  focus: async ({ sceneId, boardUid }) => {
+    if (sceneId != null) {
+      if (!scriptData) {
+        const error = new Error('The open project has no script scenes')
+        error.code = 'NO_SCENE'
+        throw error
+      }
+      const sceneNumber = getSceneNumberBySceneId(sceneId)
+      if (sceneNumber == null || sceneNumber < 0) {
+        const error = new Error(`Scene ${sceneId} was not found`)
+        error.code = 'NOT_FOUND'
+        throw error
+      }
+      if (sceneNumber !== currentScene) {
+        await saveImageFile()
+        currentScene = sceneNumber
+        await loadScene(currentScene)
+        await verifyScene()
+        renderScript()
+      }
+    }
+    if (boardUid != null) {
+      const index = boardData.boards.findIndex(board => board.uid === boardUid)
+      if (index < 0) {
+        const error = new Error(`Board ${boardUid} was not found`)
+        error.code = 'NOT_FOUND'
+        throw error
+      }
+      await gotoBoard(index)
+    }
+    return { ok: true, revision: mcpRevision, scene: getSceneObjectByIndex(currentScene) && getSceneObjectByIndex(currentScene).scene_id, boardUid: boardData.boards[currentBoard] && boardData.boards[currentBoard].uid }
+  },
+  exporter,
+  shouldWatermark: () => Boolean(prefsModule.getPrefs().enableWatermark),
+  getWatermarkPath: () => watermarkModel.watermarkImagePath(prefsModule.getPrefs(), app.getPath('userData'))
+})
+
+ipcRenderer.on('mcp:request', async (_event, request = {}) => {
+  const requestId = typeof request.requestId === 'string' ? request.requestId : ''
+  if (!requestId) return
+  let result
+  try {
+    result = await mcpAdapter.handle(request.operation, request.payload || {})
+  } catch (error) {
+    result = {
+      ok: false,
+      code: error && typeof error.code === 'string' ? error.code : 'INTERNAL_ERROR',
+      message: error && error.message ? error.message : 'MCP renderer operation failed'
+    }
+  }
+  ipcRenderer.send('mcp:response', { requestId, result })
 })
 
 const logToView = opt => ipcRenderer.send('log', opt)

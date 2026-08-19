@@ -65,6 +65,7 @@ const printProjectIpc = require('./windows/print-project/ipc-services')
 const printWorksheet = require('./windows/print-worksheet/main')
 const worksheetPrinter = require('./windows/print-worksheet/worksheet-printer')
 const createPrint = require('./print')
+const { StoryboarderMcpService } = require('./mcp/server')
 
 const JWT = require('jsonwebtoken')
 
@@ -164,6 +165,14 @@ let toBeOpenedPath
 
 let isLoadingProject
 
+// MCP desktop bridge state.  The MCP HTTP server stays in the main process;
+// project data and canvas operations remain owned by the current renderer.
+const mcpBridgePending = new Map()
+const mcpBridgeQueue = []
+let mcpService
+let mcpRequestSequence = 0
+let mcpRendererReady = false
+
 // IPC is an application boundary even when the sender is one of the legacy
 // Node-enabled windows.  Keep the allow-list in one place so new handlers do
 // not accidentally accept messages from a detached or navigated WebContents.
@@ -189,10 +198,151 @@ const isKnownAppWindowSender = event => isWindowSender(event, [
   LanguagePreferencesWindow && LanguagePreferencesWindow.getWindow && LanguagePreferencesWindow.getWindow()
 ])
 
+app.on('before-quit', () => {
+  stopMcpService().catch(err => log.warn('Could not stop Storyboarder MCP service', err.message))
+})
+
+ipcMain.on('mcp:response', (event, response = {}) => {
+  if (!isMainWindowSender(event) || !response || typeof response !== 'object') return
+  const requestId = typeof response.requestId === 'string' ? response.requestId : ''
+  const pending = mcpBridgePending.get(requestId)
+  if (!pending) return
+  mcpBridgePending.delete(requestId)
+  clearTimeout(pending.timer)
+  pending.resolve(response.result || { ok: false, code: 'INTERNAL_ERROR', message: 'Empty MCP renderer response' })
+})
+
+ipcMain.on('mcp:changed', event => {
+  if (!isMainWindowSender(event) || !mcpService) return
+  mcpService.notifyResourcesChanged().catch(err => log.warn('Could not notify MCP resources', err.message))
+})
+
+ipcMain.handle('mcp:status', event => {
+  if (!isMainWindowSender(event) && !isPreferencesWindowSender(event)) return { enabled: false }
+  return mcpStatusForRenderer()
+})
+
+ipcMain.handle('mcp:set-enabled', async (event, value) => {
+  if (!isPreferencesWindowSender(event)) return { ok: false, code: 'UNAUTHORIZED' }
+  const enabled = value === true
+  prefModule.set('enableMcp', enabled, true)
+  try {
+    const status = enabled ? await startMcpService() : await stopMcpService()
+    return { ok: true, status: enabled ? status : mcpStatusForRenderer() }
+  } catch (err) {
+    log.warn('Could not change MCP service state', err.message)
+    prefModule.set('enableMcp', false, true)
+    return { ok: false, code: 'INTERNAL_ERROR', message: 'Could not start MCP service' }
+  }
+})
+
+// MCP PDF export reuses the existing, node-only print pipeline.  The current
+// renderer supplies project data through the same strictly-scoped response
+// channel used by the visible print window; no path supplied by MCP is used.
+ipcMain.handle('mcp:export-pdf', async event => {
+  if (!isMainWindowSender(event) || !mainWindow || mainWindow.isDestroyed() || !currentFile) {
+    return { ok: false, code: 'NO_PROJECT', message: 'No Storyboarder project is open' }
+  }
+  try {
+    const projectData = await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        ipcMain.removeListener('exportPDF:getProjectData-response', onResponse)
+        reject(new Error('Timed out waiting for project data'))
+      }, 30000)
+      const onResponse = (responseEvent, value) => {
+        if (!mainWindow || responseEvent.sender !== mainWindow.webContents) return
+        clearTimeout(timeout)
+        ipcMain.removeListener('exportPDF:getProjectData-response', onResponse)
+        resolve(value)
+      }
+      ipcMain.on('exportPDF:getProjectData-response', onResponse)
+      mainWindow.webContents.send('exportPDF:getProjectData-request')
+    })
+    const project = await printProjectDataLoader.getProjectData({ currentFilePath: currentFile, projectData })
+    printProjectIpc.setProject(project)
+    const result = await printProjectIpc.exportPdf({})
+    const outputPath = path.relative(path.dirname(currentFile), result.filepath)
+    if (!outputPath || outputPath.startsWith('..') || path.isAbsolute(outputPath)) throw new Error('PDF exporter returned an unsafe path')
+    return { ok: true, format: 'pdf', outputPath }
+  } catch (err) {
+    log.warn('Could not export PDF for MCP request', err.message)
+    return { ok: false, code: 'VALIDATION_FAILED', message: 'Could not export PDF' }
+  }
+})
+
 const sendToMainWindow = (channel, ...args) => {
   if (!mainWindow || mainWindow.isDestroyed()) return false
   mainWindow.webContents.send(channel, ...args)
   return true
+}
+
+const createMcpBridge = () => ({
+  request: (operation, payload = {}, { timeoutMs = 30000 } = {}) => {
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      return Promise.resolve({ ok: false, code: 'NO_PROJECT', message: 'No Storyboarder project window is open' })
+    }
+
+    const requestId = `mcp-${Date.now()}-${++mcpRequestSequence}`
+    return new Promise(resolve => {
+      const timer = setTimeout(() => {
+        mcpBridgePending.delete(requestId)
+        const queuedIndex = mcpBridgeQueue.indexOf(requestId)
+        if (queuedIndex >= 0) mcpBridgeQueue.splice(queuedIndex, 1)
+        resolve({ ok: false, code: 'BUSY', message: 'Storyboarder did not answer the MCP request in time' })
+      }, Math.max(1000, Math.min(Number(timeoutMs) || 30000, 10 * 60 * 1000)))
+
+      const message = {
+        requestId,
+        operation,
+        payload
+      }
+      mcpBridgePending.set(requestId, { resolve, timer, message })
+      if (mcpRendererReady) mainWindow.webContents.send('mcp:request', message)
+      else mcpBridgeQueue.push(requestId)
+    })
+  }
+})
+
+const flushMcpBridgeQueue = () => {
+  if (!mcpRendererReady || !mainWindow || mainWindow.isDestroyed()) return
+  while (mcpBridgeQueue.length) {
+    const requestId = mcpBridgeQueue.shift()
+    const pending = mcpBridgePending.get(requestId)
+    if (pending) mainWindow.webContents.send('mcp:request', pending.message)
+  }
+}
+
+const startMcpService = async () => {
+  if (!mcpService) {
+    mcpService = new StoryboarderMcpService({
+      bridge: createMcpBridge(),
+      appVersion: pkg.version,
+      logger: log
+    })
+  }
+  return mcpService.start()
+}
+
+const stopMcpService = async () => {
+  if (!mcpService) return
+  await mcpService.stop()
+  for (const [requestId, pending] of mcpBridgePending) {
+    clearTimeout(pending.timer)
+    pending.resolve({ ok: false, code: 'BUSY', message: 'MCP service stopped' })
+    mcpBridgePending.delete(requestId)
+  }
+  mcpBridgeQueue.splice(0, mcpBridgeQueue.length)
+}
+
+const mcpStatusForRenderer = () => {
+  const info = mcpService ? mcpService.getInfo() : { enabled: false, host: '127.0.0.1', port: null, endpoint: null, token: null }
+  return {
+    enabled: Boolean(info.enabled),
+    endpoint: info.endpoint,
+    token: info.token,
+    host: info.host,
+    port: info.port
+  }
 }
 
 const normalizeAspectRatio = value => {
@@ -340,7 +490,14 @@ const PREFERENCES_TRANSLATION_KEYS = [
   'preferences.thanks-for-support',
   'preferences.additional-features-for-support',
   'preferences.add-watermark',
-  'preferences.custom-watermark'
+  'preferences.custom-watermark',
+  'preferences.enable-mcp',
+  'preferences.mcp-hint',
+  'preferences.mcp-disabled',
+  'preferences.mcp-listening',
+  'preferences.mcp-token',
+  'preferences.mcp-copy-config',
+  'preferences.mcp-config-copied'
 ]
 
 const PREFERENCES_BOOLEAN_KEYS = new Set([
@@ -359,7 +516,8 @@ const PREFERENCES_BOOLEAN_KEYS = new Set([
   'enableCanvasPaintingOpacity',
   'enableBrushCursor',
   'enableStabilizer',
-  'enableWatermark'
+  'enableWatermark',
+  'enableMcp'
 ])
 
 const PREFERENCES_RENDERER_KEYS = [
@@ -888,6 +1046,12 @@ app.on('ready', async () => {
     store,
     send: (event, ...rest) => menuBus.emit(event, event, ...rest)
   })
+
+  if (prefModule.getPrefs('mcp startup').enableMcp === true) {
+    startMcpService()
+      .then(status => log.info('Storyboarder MCP service listening at', status.endpoint))
+      .catch(err => log.warn('Could not start Storyboarder MCP service', err.message))
+  }
 
 
 
@@ -1652,6 +1816,7 @@ const createAndLoadProject = aspectRatio => {
 }
 
 let loadStoryboarderWindow = (filename, scriptData, locations, characters, boardSettings, currentPath) => {
+  mcpRendererReady = false
   isLoadingProject = true
   mainWindowPathGrants.clear()
   // The project was selected through the app's open flow. Explicitly grant
@@ -2873,6 +3038,8 @@ ipcMain.on('log', (event, opt) => {
 
 ipcMain.on('workspaceReady', event => {
   if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) return
+  mcpRendererReady = true
+  flushMcpBridgeQueue()
   if (loadingStatusWindow && !loadingStatusWindow.isDestroyed()) loadingStatusWindow.hide()
 
   if (!mainWindow) return

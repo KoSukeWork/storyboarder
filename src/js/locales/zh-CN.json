@@ -693,7 +693,14 @@
     "thanks-for-support": "感谢支持 Storyboarder！",
     "additional-features-for-support": "以下是支持者的一些其他功能。",
     "add-watermark": "为导出的图像和视频添加水印。",
-    "custom-watermark": "自定义水印图像（默认为空白）"
+    "custom-watermark": "自定义水印图像（默认为空白）",
+    "enable-mcp": "启用 MCP 服务",
+    "mcp-hint": "为当前打开的 Storyboarder 项目启用本地令牌保护的 MCP 连接。",
+    "mcp-disabled": "MCP 服务已禁用。",
+    "mcp-listening": "监听地址：{{endpoint}}",
+    "mcp-token": "会话令牌：{{token}}",
+    "mcp-copy-config": "复制 MCP 连接配置",
+    "mcp-config-copied": "MCP 连接配置已复制。"
   },
   "print-project": {
     "title": "打印",

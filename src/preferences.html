@@ -131,6 +131,23 @@
         </div>
 
         <div class="preferences-input">
+          <input
+            type="checkbox"
+            name="enableMcp"
+            id="enableMcp" />
+
+          <label for="enableMcp" id="enable-mcp">
+            <span></span>Enable MCP Service
+          </label>
+          <div class="preferences-hint" id="mcp-hint">
+            Enables a local, token-protected MCP connection for the currently open Storyboarder project.
+          </div>
+          <div id="mcp-status" class="preferences-hint"></div>
+          <div id="mcp-token" class="preferences-hint" style="word-break:break-all"></div>
+          <a id="mcp-copy-config" class="button" href="#" style="display:none">Copy MCP Connection Config</a>
+        </div>
+
+        <div class="preferences-input">
           <label for="straightLineDelayInMsecs" id="line-delay">
             Straight Line Delay
           </label>

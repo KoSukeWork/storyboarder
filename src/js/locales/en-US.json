@@ -693,7 +693,14 @@
     "thanks-for-support": "Thanks for supporting Storyboarder!",
     "additional-features-for-support": "Here are some additional features for supporters.",
     "add-watermark": "Add watermark to exported images and video.",
-    "custom-watermark": "Custom watermark image (leave blank for default)"
+    "custom-watermark": "Custom watermark image (leave blank for default)",
+    "enable-mcp": "Enable MCP Service",
+    "mcp-hint": "Enables a local, token-protected MCP connection for the currently open Storyboarder project.",
+    "mcp-disabled": "MCP service is disabled.",
+    "mcp-listening": "Listening at {{endpoint}}",
+    "mcp-token": "Session token: {{token}}",
+    "mcp-copy-config": "Copy MCP Connection Config",
+    "mcp-config-copied": "MCP connection config copied."
   },
   "print-project": {
     "title": "Print",

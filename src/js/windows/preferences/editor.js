@@ -16,6 +16,9 @@ let imgEditorEl
 let imgEditorInput
 let revealKeyMapFileEl
 let signOutEl
+let mcpStatusEl
+let mcpTokenEl
+let mcpCopyConfigEl
 let selectedOption
 let hasChanged = false
 
@@ -102,6 +105,9 @@ const updateHTML = () => {
   translateText('#additional-features-for-support', 'preferences.additional-features-for-support')
   translateText('#add-watermark', 'preferences.add-watermark')
   translateText('#custom-watermark', 'preferences.custom-watermark')
+  translateText('#enable-mcp', 'preferences.enable-mcp')
+  translateHtml('#mcp-hint', 'preferences.mcp-hint')
+  translateText('#mcp-copy-config', 'preferences.mcp-copy-config')
 }
 
 const updatePreference = (name, value) => {
@@ -113,6 +119,20 @@ const updatePreference = (name, value) => {
 
 const onChange = (name, event) => {
   const el = event.target
+  if (name === 'enableMcp') {
+    api.setMcpEnabled(el.checked).then(result => {
+      if (!result || !result.ok) {
+        el.checked = false
+        prefs.enableMcp = false
+        alert('Could not start the MCP service.')
+      }
+      return refreshData()
+    }).catch(() => {
+      el.checked = false
+      prefs.enableMcp = false
+    })
+    return
+  }
   if (name === 'defaultBoardTiming') {
     const value = el.value === '' ? 2000 : sToMsecs(el.value)
     if (Number.isInteger(value)) updatePreference(name, value)
@@ -134,6 +154,7 @@ const onInput = (name, event) => {
 const refreshData = async ({ resetOriginal = false } = {}) => {
   const data = await api.getData()
   if (!data || typeof data !== 'object') throw new Error('Invalid preferences data')
+  data.mcpStatus = await api.getMcpStatus().catch(() => ({ enabled: false }))
   viewData = data
   prefs = clone(data.prefs)
   if (resetOriginal) originalPrefs = clone(prefs)
@@ -240,6 +261,21 @@ const render = () => {
     }
   }
 
+  const mcpStatus = viewData.mcpStatus || {}
+  if (mcpStatusEl) {
+    mcpStatusEl.textContent = mcpStatus.enabled
+      ? (translation('preferences.mcp-listening') || 'Listening at {{endpoint}}').replace('{{endpoint}}', mcpStatus.endpoint || '(unknown endpoint)')
+      : (translation('preferences.mcp-disabled') || 'MCP service is disabled.')
+  }
+  if (mcpTokenEl) {
+    mcpTokenEl.textContent = mcpStatus.enabled && mcpStatus.token
+      ? (translation('preferences.mcp-token') || 'Session token: {{token}}').replace('{{token}}', mcpStatus.token)
+      : ''
+  }
+  if (mcpCopyConfigEl) {
+    mcpCopyConfigEl.style.display = mcpStatus.enabled ? 'inline-block' : 'none'
+  }
+
   hasChanged = Object.keys(primitiveChangedPrefs()).length > 0
 }
 
@@ -300,12 +336,27 @@ const init = async () => {
   imgEditorInput = document.querySelector('#absolutePathToImageEditor')
   revealKeyMapFileEl = document.querySelector('#revealKeyMapFile')
   signOutEl = document.querySelector('#signOut')
+  mcpStatusEl = document.querySelector('#mcp-status')
+  mcpTokenEl = document.querySelector('#mcp-token')
+  mcpCopyConfigEl = document.querySelector('#mcp-copy-config')
 
   for (const el of inputs) el.addEventListener('change', onChange.bind(null, el.name))
   for (const el of document.querySelectorAll('input[type="range"]')) el.addEventListener('input', onInput.bind(null, el.name))
   imgEditorEl.addEventListener('click', onFilenameClick)
   revealKeyMapFileEl.addEventListener('click', onRevealKeyMapFileClick)
   signOutEl.addEventListener('click', onSignOut)
+  if (mcpCopyConfigEl) mcpCopyConfigEl.addEventListener('click', async event => {
+    event.preventDefault()
+    const status = viewData.mcpStatus || {}
+    if (!status.enabled || !status.endpoint || !status.token) return
+    const config = JSON.stringify({ url: status.endpoint, headers: { Authorization: `Bearer ${status.token}` } }, null, 2)
+    try {
+      await navigator.clipboard.writeText(config)
+      mcpStatusEl.textContent = translation('preferences.mcp-config-copied') || 'MCP connection config copied.'
+    } catch (err) {
+      alert(config)
+    }
+  })
   const languageEditor = document.querySelector('.open-language-editor button')
   if (languageEditor) languageEditor.onclick = event => {
     event.preventDefault()
